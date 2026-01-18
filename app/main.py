@@ -5,6 +5,7 @@ from sql_generator.sql_generator import SQLGenerator
 from schema_linker.schema_linker import SchemaLinker
 
 
+
 @click.group()
 def cli():
     """Text-to-SQL System CLI"""
