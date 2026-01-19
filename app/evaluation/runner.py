@@ -255,13 +255,54 @@ def run_evaluation(
     return runner.run(config)
 
 
-if __name__ == "__main__":
-    # Quick test
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run text-to-SQL evaluation on Spider dataset")
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="dev",
+        choices=["dev", "train"],
+        help="Dataset split to evaluate (default: dev)"
+    )
+    parser.add_argument(
+        "--max-examples",
+        type=int,
+        default=None,
+        help="Maximum number of examples to evaluate (default: all)"
+    )
+    parser.add_argument(
+        "--spider-dir",
+        type=str,
+        default="databases/spider",
+        help="Path to Spider dataset directory"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="outputs",
+        help="Directory to save results"
+    )
+    parser.add_argument(
+        "--no-schema-linking",
+        action="store_true",
+        help="Disable schema linking (use full schema)"
+    )
+
+    args = parser.parse_args()
+
+    print(f"Running evaluation on Spider {args.split} set")
+    print(f"Max examples: {args.max_examples or 'all'}")
+    print(f"Schema linking: {'disabled' if args.no_schema_linking else 'enabled'}")
+    print()
+
     result = run_evaluation(
-        spider_dir="databases/spider",
-        split="dev",
-        max_examples=5,  # Just 5 examples for testing
-        use_schema_linking=True,
+        spider_dir=args.spider_dir,
+        split=args.split,
+        max_examples=args.max_examples,
+        use_schema_linking=not args.no_schema_linking,
+        output_dir=args.output_dir,
     )
 
     print("\n" + "=" * 50)
@@ -270,3 +311,7 @@ if __name__ == "__main__":
     print(result.evaluation)
     print(f"\nTotal time: {result.total_time_seconds:.2f}s")
     print(f"Avg time per example: {result.avg_time_per_example:.2f}s")
+
+
+if __name__ == "__main__":
+    main()

@@ -89,10 +89,11 @@ class TextToSQLPipeline:
 RULES:
 1. Output ONLY valid SQL code - no explanations, no markdown, no extra text
 2. Use proper SQL syntax compatible with SQLite
-3. Handle NULL values appropriately with IS NULL/IS NOT NULL
-4. Use explicit JOIN syntax (INNER JOIN, LEFT JOIN) with ON clauses
-5. Include all necessary WHERE conditions based on the question
-6. End each statement with a semicolon
+3. Extract and use specific values from the question (numbers, names, dates, etc.)
+4. Handle NULL values appropriately with IS NULL/IS NOT NULL
+5. Use explicit JOIN syntax (INNER JOIN, LEFT JOIN) with ON clauses
+6. Include all necessary WHERE conditions based on the question
+7. End each statement with a semicolon
 
 CRITICAL: Never include any reasoning, commentary, or explanations in your output. Only SQL code."""
 

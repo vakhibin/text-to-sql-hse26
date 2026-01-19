@@ -15,6 +15,7 @@ def create_llm(
     api_key: str | None = None,
     temperature: float = 0.0,
     max_tokens: int = 512,
+    timeout: int = 60,
 ) -> BaseChatModel:
     """
     Create a LangChain LLM client for the specified provider.
@@ -39,12 +40,14 @@ def create_llm(
             base_url="https://openrouter.ai/api/v1",
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=timeout,
         )
     elif provider == "ollama":
         return ChatOllama(
             model=model,
             temperature=temperature,
             num_predict=max_tokens,
+            timeout=timeout,
         )
     else:
         raise LLMClientError(f"Unknown provider: {provider}")
