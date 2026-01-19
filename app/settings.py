@@ -8,20 +8,21 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # OpenRouter
+    # OpenRouter API
     openrouter_api_key: str | None = None
-    openrouter_model: str = "anthropic/claude-3.5-sonnet"
-    openrouter_embedding_model: str = "qwen/qwen3-embedding-8b"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # Ollama
     ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "mistral:7b-instruct"
 
-    # LLM defaults
-    llm_provider: str = "openrouter"
-    llm_model: str = "anthropic/claude-3.5-sonnet"
+    # LLM settings
+    llm_provider: str = "openrouter"  # "openrouter" or "ollama"
+    llm_model: str = "deepseek/deepseek-r1-0528:free"
     llm_temperature: float = 0.0
     llm_max_tokens: int = 512
+
+    # Embeddings
+    embedding_model: str = "qwen/qwen3-embedding-8b"
 
 
 settings = Settings()
