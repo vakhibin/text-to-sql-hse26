@@ -9,6 +9,7 @@ dependencies = [
     "kagglehub>=0.4.0",
     "langchain-ollama>=1.0.1",
     "langchain-openai>=1.1.7",
+    "numpy>=2.4.1",
     "ollama>=0.6.1",
     "openrouter>=0.1.1",
     "pydantic>=2.12.5",

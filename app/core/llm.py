@@ -51,7 +51,7 @@ def create_llm(
 
 
 if __name__ == "__main__":
-    llm = create_llm(provider="ollama", model="mistral:7b-instruct")
+    llm = create_llm(provider="openrouter", model="mistral:7b-instruct")
 
     messages = [
         ("system", "Just have some funny conversation with me"),
