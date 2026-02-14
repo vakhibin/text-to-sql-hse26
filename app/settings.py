@@ -1,9 +1,14 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from app.config.secrets import (OPENROUTER_API_KEY,
+                                LLM_PROVIDER,
+                                LLM_MODEL,
+                                LLM_TEMPERATURE,
+                                LLM_MAX_TOKENS,
+                                EMBEDDING_MODEL)
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file="../.env",
         env_file_encoding="utf-8",
         extra="ignore",
     )

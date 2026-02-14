@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 from dataclasses import dataclass
@@ -18,7 +19,6 @@ class GenerationMode(Enum):
     COT = "cot"
     FEW_SHOT = "few_shot"
 
-
 @dataclass
 class SQLGenerationResult:
     sql: str
@@ -28,6 +28,7 @@ class SQLGenerationResult:
     generation_time: float = 0.0
     metadata: Optional[Dict] = None
 
+TEST_QUERY = False
 
 class SQLGenerator:
     def __init__(
@@ -53,13 +54,14 @@ class SQLGenerator:
     def system_prompt(self) -> Optional[str]:
         return self._system_prompt
 
-    def generate_sql(
+    async def agenerate_sql(
             self,
             question: str,
             schema: Union[str, Dict],
             db_id: Optional[str] = None,
             **kwargs
     ) -> SQLGenerationResult:
+        """Asynchronously generate SQL from natural language question."""
         start_time = time.time()
 
         try:
@@ -67,7 +69,7 @@ class SQLGenerator:
             prompt = self._build_prompt(question, schema_str, db_id, **kwargs)
             messages = self._build_messages(prompt)
 
-            response = self._llm.invoke(messages)
+            response = await self._llm.ainvoke(messages)
             response_text = response.content
 
             sql = self._extract_sql(response_text)
@@ -96,6 +98,24 @@ class SQLGenerator:
             raise SQLGeneratorError(f"LLM client error: {e}")
         except Exception as e:
             raise SQLGeneratorError(f"Error generating SQL: {e}")
+
+    def generate_sql(
+            self,
+            question: str,
+            schema: Union[str, Dict],
+            db_id: Optional[str] = None,
+            **kwargs
+    ) -> SQLGenerationResult:
+        """Synchronous wrapper for agenerate_sql."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        return loop.run_until_complete(
+            self.agenerate_sql(question, schema, db_id, **kwargs)
+        )
 
     def _prepare_schema(self, schema: Union[str, Dict]) -> str:
         """Prepare schema for prompt."""
@@ -290,35 +310,51 @@ After your reasoning, output ONLY the SQL query."""
         self.few_shot_examples.clear()
 
 
-if __name__ == "__main__":
-    llm = create_llm(provider="ollama", model="codellama:7b-instruct")
+async def main():
+    """Async test function."""
+    if TEST_QUERY:
+        from app.settings import settings
 
-    generator = SQLGenerator(
-        llm=llm,
-        generation_mode=GenerationMode.COT,
-        system_prompt="You are an expert SQL assistant. Output only SQL."
-    )
-
-    schema = """
-    employees (id, name, department_id, hire_date, salary)
-    departments (id, name, manager_id)
-    projects (id, name, department_id, budget, start_date, end_date)
-    """
-
-    question = "Show all employees in the Sales department with salary above 50000"
-
-    try:
-        result = generator.generate_sql(
-            question=question,
-            schema=schema,
-            db_id="company_db"
+        llm = await create_llm(
+            provider=settings.llm_provider,
+            model=settings.llm_model,
+            api_key=settings.openrouter_api_key,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+            timeout=60
         )
 
-        print("SQL generated successfully!")
-        print(f"SQL: {result.sql}")
-        print(f"Reasoning: {result.reasoning[:100]}..." if result.reasoning else "No reasoning")
-        print(f"Confidence: {result.confidence}")
-        print(f"Generation time: {result.generation_time:.2f}s")
+        generator = SQLGenerator(
+            llm=llm,
+            generation_mode=GenerationMode.COT,
+            system_prompt="You are an expert SQL assistant. Output only SQL."
+        )
 
-    except SQLGeneratorError as e:
-        print(f"Error: {e}")
+        schema = """
+        employees (id, name, department_id, hire_date, salary)
+        departments (id, name, manager_id)
+        projects (id, name, department_id, budget, start_date, end_date)
+        """
+
+        question = "Show all employees in the Sales department with salary above 50000"
+
+        try:
+            result = await generator.agenerate_sql(
+                question=question,
+                schema=schema,
+                db_id="company_db"
+            )
+
+            print("SQL generated successfully!")
+            print(f"SQL: {result.sql}")
+            print(f"Reasoning: {result.reasoning[:100]}..." if result.reasoning else "No reasoning")
+            print(f"Confidence: {result.confidence}")
+            print(f"Generation time: {result.generation_time:.2f}s")
+
+        except SQLGeneratorError as e:
+            print(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    if TEST_QUERY:
+        asyncio.run(main())

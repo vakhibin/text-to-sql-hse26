@@ -1,37 +1,67 @@
+import asyncio
 import sqlite3
+import aiosqlite
 from typing import Any, List, Tuple, Optional
+from contextlib import asynccontextmanager
+
 
 class SQLiteDatabase:
+    """Asynchronous SQLite client using aiosqlite"""
+
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._connection: Optional[sqlite3.Connection] = None
+        self._connection: Optional[aiosqlite.Connection] = None
 
-    def connect(self) -> None:
+    async def connect(self) -> None:
+        """Establish asynchronous database connection"""
         if self._connection is None:
-            self._connection = sqlite3.connect(self.db_path)
+            self._connection = await aiosqlite.connect(self.db_path)
+            # Enable foreign key support
+            await self._connection.execute("PRAGMA foreign_keys = ON;")
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
+        """Close database connection asynchronously"""
         if self._connection is not None:
-            self._connection.close()
+            await self._connection.close()
             self._connection = None
 
-    def execute_query(self, query: str, params: Tuple[Any, ...] = ()) -> List[Tuple]:
+    async def execute_query(self, query: str, params: Tuple[Any, ...] = ()) -> List[Tuple]:
+        """Execute SELECT query"""
         if self._connection is None:
-            self.connect()
+            await self.connect()
 
-        cursor = self._connection.cursor()
         try:
-            cursor.execute(query, params)
-            result = cursor.fetchall()
+            cursor = await self._connection.execute(query, params)
+            result = await cursor.fetchall()
+            await cursor.close()
             return result
-        except sqlite3.Error as e:
+        except aiosqlite.Error as e:
             raise e
-        finally:
-            cursor.close()
 
-    def __enter__(self):
-        self.connect()
+    async def __aenter__(self):
+        """Async context manager entry"""
+        await self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.disconnect()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        await self.disconnect()
+
+
+if __name__ == "__main__":
+    async def main():
+        db_path = "databases/spider/database/concert_singer/concert_singer.sqlite"
+        sql_query = "SELECT COUNT(*) FROM singer;"
+        gold_sql_query = "SELECT count(*) FROM singer"
+        async with SQLiteDatabase(db_path) as db:
+            try:
+                print("===="*10)
+                predicted_result = await db.execute_query(sql_query)
+                gold_result = await db.execute_query(gold_sql_query)
+                print("Predicted result:", predicted_result)
+                print("Gold result:", gold_result)
+            except Exception as e:
+                error = f"Predicted SQL error: {str(e)}"
+                return False, error, None, None
+
+    asyncio.run(main())
