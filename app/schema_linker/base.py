@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
+import asyncio
 
 import numpy as np
 from langchain_core.embeddings import Embeddings
@@ -82,19 +83,20 @@ class BaseSchemaLinker(ABC):
     def __init__(self, embeddings: Optional[Embeddings] = None):
         self._embeddings = embeddings
         self._schema_cache: Optional[List[TableInfo]] = None
+        self._cache_lock = asyncio.Lock()
 
     @abstractmethod
-    def get_full_schema(self) -> List[TableInfo]:
-        """Extract full schema. Must be implemented by subclasses."""
+    async def get_full_schema(self) -> List[TableInfo]:
+        """Extract full schema asynchronously. Must be implemented by subclasses."""
         pass
 
-    def get_schema_string(self) -> str:
-        """Get full schema as formatted string."""
-        tables = self.get_full_schema()
+    async def get_schema_string(self) -> str:
+        """Get full schema as formatted string asynchronously."""
+        tables = await self.get_full_schema()
         linked = LinkedSchema(tables=tables)
         return linked.to_schema_string()
 
-    def link(
+    async def link(
         self,
         question: str,
         evidence: Optional[str] = None,
@@ -102,7 +104,7 @@ class BaseSchemaLinker(ABC):
         top_k_columns: int = 10,
     ) -> LinkedSchema:
         """
-        Link question to relevant schema elements using embeddings.
+        Link question to relevant schema elements using embeddings asynchronously.
 
         Args:
             question: Natural language question
@@ -113,7 +115,7 @@ class BaseSchemaLinker(ABC):
         Returns:
             LinkedSchema with relevant tables and columns
         """
-        tables = self.get_full_schema()
+        tables = await self.get_full_schema()
 
         if self._embeddings is None or not tables:
             return LinkedSchema(tables=tables)
@@ -132,19 +134,21 @@ class BaseSchemaLinker(ABC):
                 column_texts.append(f"column {col} in table {table.name}")
                 column_info.append((table.name, col))
 
-        # Get embeddings via LangChain
-        query_emb = self._embeddings.embed_query(query_text)
-        table_embs = self._embeddings.embed_documents(table_texts)
-        column_embs = self._embeddings.embed_documents(column_texts)
+        # Get embeddings via LangChain asynchronously
+        query_emb = await self._embeddings.aembed_query(query_text)
+        table_embs = await self._embeddings.aembed_documents(table_texts)
+        column_embs = await self._embeddings.aembed_documents(column_texts)
 
-        # Compute similarities
-        table_scores = cosine_similarity(query_emb, table_embs)
-        column_scores = cosine_similarity(query_emb, column_embs)
+        # Compute similarities (CPU-bound, run in thread pool)
+        table_scores = await asyncio.to_thread(cosine_similarity, query_emb, table_embs)
+        column_scores = await asyncio.to_thread(cosine_similarity, query_emb, column_embs)
 
-        # Select top-k tables
-        top_table_indices = np.argsort(table_scores)[::-1][:top_k_tables]
+        # Select top-k tables (CPU-bound, run in thread pool)
+        top_table_indices = await asyncio.to_thread(
+            lambda: np.argsort(table_scores)[::-1][:top_k_tables]
+        )
 
-        # Build result
+        # Build result directly (no extra helper methods)
         table_scores_dict = {tables[i].name: float(table_scores[i]) for i in top_table_indices}
         column_scores_dict: Dict[str, Dict[str, float]] = {}
 

@@ -1,3 +1,4 @@
+import asyncio
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,7 +10,7 @@ from langchain_core.embeddings import Embeddings
 from app.core.db import SQLiteDatabase
 from app.schema_linker import SpiderSchemaLinker, LinkedSchema
 from app.sql_generator.sql_generator import SQLGenerator, SQLGenerationResult, GenerationMode
-
+from app.core.llm import NoTokenProvidedError
 
 @dataclass
 class PipelineResult:
@@ -40,7 +41,7 @@ class PipelineResult:
 
 
 class TextToSQLPipeline:
-    """Pipeline for text-to-SQL generation on Spider dataset."""
+    """Asynchronous pipeline for text-to-SQL generation on Spider dataset."""
 
     def __init__(
         self,
@@ -54,7 +55,7 @@ class TextToSQLPipeline:
         top_k_columns: int = 10,
     ):
         """
-        Initialize text-to-SQL pipeline.
+        Initialize asynchronous text-to-SQL pipeline.
 
         Args:
             llm: LangChain chat model for SQL generation
@@ -82,6 +83,7 @@ class TextToSQLPipeline:
 
         # Cache for schema linkers (one per db_id)
         self._schema_linkers: Dict[str, SpiderSchemaLinker] = {}
+        self._linker_lock = asyncio.Lock()
 
     def _default_system_prompt(self) -> str:
         return """You are an expert SQL assistant specialized in generating accurate SQL queries from natural language questions.
@@ -97,21 +99,23 @@ RULES:
 
 CRITICAL: Never include any reasoning, commentary, or explanations in your output. Only SQL code."""
 
-    def _get_schema_linker(self, db_id: str) -> SpiderSchemaLinker:
-        """Get or create schema linker for a database."""
+    async def _get_schema_linker(self, db_id: str) -> SpiderSchemaLinker:
+        """Get or create schema linker for a database asynchronously."""
         if db_id not in self._schema_linkers:
-            self._schema_linkers[db_id] = SpiderSchemaLinker.from_spider_dir(
-                spider_dir=self._spider_dir,
-                db_id=db_id,
-                embeddings=self._embeddings if self._use_schema_linking else None,
-            )
+            async with self._linker_lock:
+                if db_id not in self._schema_linkers:
+                    self._schema_linkers[db_id] = await SpiderSchemaLinker.from_spider_dir(
+                        spider_dir=self._spider_dir,
+                        db_id=db_id,
+                        embeddings=self._embeddings if self._use_schema_linking else None,
+                    )
         return self._schema_linkers[db_id]
 
     def _get_db_path(self, db_id: str) -> Path:
         """Get path to SQLite database."""
         return self._spider_dir / "database" / db_id / f"{db_id}.sqlite"
 
-    def run(
+    async def run(
         self,
         question: str,
         db_id: str,
@@ -120,7 +124,7 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
         execute: bool = True,
     ) -> PipelineResult:
         """
-        Run the text-to-SQL pipeline.
+        Run the text-to-SQL pipeline asynchronously.
 
         Args:
             question: Natural language question
@@ -142,10 +146,10 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
 
         # Step 1: Schema linking
         schema_start = time.time()
-        schema_linker = self._get_schema_linker(db_id)
+        schema_linker = await self._get_schema_linker(db_id)
 
         if self._use_schema_linking:
-            linked_schema = schema_linker.link(
+            linked_schema = await schema_linker.link(
                 question=question,
                 evidence=evidence,
                 top_k_tables=self._top_k_tables,
@@ -153,7 +157,8 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
             )
         else:
             # Use full schema
-            linked_schema = LinkedSchema(tables=schema_linker.get_full_schema())
+            full_schema = await schema_linker.get_full_schema()  # убрать to_thread
+            linked_schema = LinkedSchema(tables=full_schema)
 
         result.linked_schema = linked_schema
         result.schema_linking_time = time.time() - schema_start
@@ -162,7 +167,7 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
         gen_start = time.time()
         schema_str = linked_schema.to_create_table_string()
 
-        generation_result = self._sql_generator.generate_sql(
+        generation_result = await self._sql_generator.agenerate_sql(
             question=question,
             schema=schema_str,
             db_id=db_id,
@@ -178,23 +183,25 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
             db_path = self._get_db_path(db_id)
 
             try:
-                with SQLiteDatabase(str(db_path)) as db:
+                async with SQLiteDatabase(str(db_path)) as db:
                     # Execute predicted SQL
                     try:
-                        result.predicted_result = db.execute_query(result.predicted_sql)
+                        result.predicted_result = await db.execute_query(result.predicted_sql)
                     except Exception as e:
                         result.execution_error = f"Predicted SQL error: {str(e)}"
 
                     # Execute gold SQL if provided
                     if gold_sql:
                         try:
-                            result.gold_result = db.execute_query(gold_sql)
+                            result.gold_result = await db.execute_query(gold_sql)
                         except Exception as e:
-                            result.execution_error = (result.execution_error or "") + f" Gold SQL error: {str(e)}"
+                            gold_error = f" Gold SQL error: {str(e)}"
+                            result.execution_error = (result.execution_error or "") + gold_error
 
                     # Compare results
                     if result.predicted_result is not None and result.gold_result is not None:
-                        result.execution_match = self._compare_results(
+                        result.execution_match = await asyncio.to_thread(
+                            self._compare_results,
                             result.predicted_result,
                             result.gold_result,
                         )
@@ -209,13 +216,17 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
 
     def _compare_results(self, predicted: List, gold: List) -> bool:
         """Compare execution results for equality."""
-        # Convert to sets of tuples for order-independent comparison
         try:
-            pred_set = set(tuple(row) if isinstance(row, (list, tuple)) else (row,) for row in predicted)
-            gold_set = set(tuple(row) if isinstance(row, (list, tuple)) else (row,) for row in gold)
+            pred_set = set(
+                tuple(row) if isinstance(row, (list, tuple)) else (row,)
+                for row in predicted
+            )
+            gold_set = set(
+                tuple(row) if isinstance(row, (list, tuple)) else (row,)
+                for row in gold
+            )
             return pred_set == gold_set
         except (TypeError, ValueError):
-            # Fallback to direct comparison if unhashable
             return predicted == gold
 
     def set_generation_mode(self, mode: GenerationMode | str):
@@ -227,13 +238,17 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
         self._sql_generator.add_few_shot_example(question, schema, sql)
 
 
-if __name__ == "__main__":
-    from app.settings import settings
+async def main():
+    """Async example usage."""
     from app.core.llm import create_llm
     from app.core.embeddings import create_embeddings
+    from app.settings import settings
 
-    # Initialize components
-    llm = create_llm(
+    if not settings.openrouter_api_key:
+        raise NoTokenProvidedError("API key wasn't provided")
+
+    # Initialize components asynchronously
+    llm = await create_llm(
         provider=settings.llm_provider,
         model=settings.llm_model,
         api_key=settings.openrouter_api_key,
@@ -241,12 +256,10 @@ if __name__ == "__main__":
         max_tokens=settings.llm_max_tokens,
     )
 
-    embeddings = None
-    if settings.openrouter_api_key:
-        embeddings = create_embeddings(
-            api_key=settings.openrouter_api_key,
-            model=settings.embedding_model,
-        )
+    embeddings = await create_embeddings(
+        api_key=settings.openrouter_api_key,
+        model=settings.embedding_model,
+    )
 
     # Create pipeline
     pipeline = TextToSQLPipeline(
@@ -259,15 +272,20 @@ if __name__ == "__main__":
     )
 
     # Run example
-    result = pipeline.run(
+    result = await pipeline.run(
         question="How many singers do we have?",
         db_id="concert_singer",
         gold_sql="SELECT count(*) FROM singer",
         execute=True,
     )
-
     print(f"Question: {result.question}")
     print(f"Predicted SQL: {result.predicted_sql}")
     print(f"Gold SQL: {result.gold_sql}")
     print(f"Execution match: {result.execution_match}")
     print(f"Total time: {result.total_time:.2f}s")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+

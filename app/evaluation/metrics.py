@@ -1,9 +1,11 @@
 import re
-from typing import List, Optional, Tuple, Set
+import asyncio
+from typing import List, Optional, Tuple, AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.core.db import SQLiteDatabase
-
+from app.core.logger import logger
 
 @dataclass
 class EvaluationResult:
@@ -71,48 +73,7 @@ def token_match(predicted_sql: str, gold_sql: str) -> bool:
     return pred_tokens == gold_tokens
 
 
-def execution_accuracy(
-    predicted_sql: str,
-    gold_sql: str,
-    db_path: str,
-) -> Tuple[bool, Optional[str], Optional[List], Optional[List]]:
-    """
-    Check if predicted SQL produces the same result as gold SQL.
 
-    Args:
-        predicted_sql: Predicted SQL query
-        gold_sql: Gold SQL query
-        db_path: Path to SQLite database
-
-    Returns:
-        Tuple of (match, error_message, predicted_result, gold_result)
-    """
-    predicted_result = None
-    gold_result = None
-    error = None
-
-    try:
-        with SQLiteDatabase(db_path) as db:
-            # Execute predicted SQL
-            try:
-                predicted_result = db.execute_query(predicted_sql)
-            except Exception as e:
-                error = f"Predicted SQL error: {str(e)}"
-                return False, error, None, None
-
-            # Execute gold SQL
-            try:
-                gold_result = db.execute_query(gold_sql)
-            except Exception as e:
-                error = f"Gold SQL error: {str(e)}"
-                return False, error, predicted_result, None
-
-            # Compare results (order-independent)
-            match = compare_results(predicted_result, gold_result)
-            return match, None, predicted_result, gold_result
-
-    except Exception as e:
-        return False, f"Database error: {str(e)}", None, None
 
 
 def compare_results(predicted: List, gold: List) -> bool:
@@ -140,13 +101,56 @@ def compare_results(predicted: List, gold: List) -> bool:
         return predicted == gold
 
 
-def evaluate_single(
-    predicted_sql: str,
-    gold_sql: str,
-    db_path: str,
+async def execution_accuracy(
+        predicted_sql: str,
+        gold_sql: str,
+        db_path: str,
+) -> Tuple[bool, Optional[str], Optional[List], Optional[List]]:
+    """
+    Check if predicted SQL produces the same result as gold SQL asynchronously.
+
+    Args:
+        predicted_sql: Predicted SQL query
+        gold_sql: Gold SQL query
+        db_path: Path to SQLite database
+
+    Returns:
+        Tuple of (match, error_message, predicted_result, gold_result)
+    """
+    predicted_result = None
+    gold_result = None
+    error = None
+
+    try:
+        async with SQLiteDatabase(db_path) as db:
+            # Execute predicted SQL
+            try:
+                predicted_result = await db.execute_query(predicted_sql)
+            except Exception as e:
+                error = f"Predicted SQL error: {str(e)}"
+                return False, error, None, None
+
+            # Execute gold SQL
+            try:
+                gold_result = await db.execute_query(gold_sql)
+            except Exception as e:
+                error = f"Gold SQL error: {str(e)}"
+                return False, error, predicted_result, None
+
+            # Compare results (order-independent)
+            match = compare_results(predicted_result, gold_result)
+            return match, None, predicted_result, gold_result
+    except Exception as e:
+        return False, f"Database error: {str(e)}", None, None
+
+
+async def evaluate_single(
+        predicted_sql: str,
+        gold_sql: str,
+        db_path: str,
 ) -> EvaluationResult:
     """
-    Evaluate a single prediction.
+    Evaluate a single prediction asynchronously.
 
     Args:
         predicted_sql: Predicted SQL query
@@ -156,15 +160,11 @@ def evaluate_single(
     Returns:
         EvaluationResult with all metrics
     """
-    # Check exact match
     em = exact_match(predicted_sql, gold_sql)
 
-    # Check execution accuracy
-    ex, error, pred_result, gold_result = execution_accuracy(
+    ex, error, pred_result, gold_result = await execution_accuracy(
         predicted_sql, gold_sql, db_path
     )
-
-    # Check if SQL is valid (no execution error on predicted)
     valid = error is None or "Gold SQL error" in (error or "")
 
     return EvaluationResult(
@@ -177,12 +177,13 @@ def evaluate_single(
     )
 
 
-def evaluate_dataset(
-    predictions: List[dict],
-    spider_dir: str,
+async def evaluate_dataset(
+        predictions: List[dict],
+        spider_dir: str,
+        max_concurrent: int = 10,
 ) -> DatasetEvaluationResult:
     """
-    Evaluate predictions on a dataset.
+    Evaluate predictions on a dataset asynchronously with concurrency control.
 
     Args:
         predictions: List of dicts with keys:
@@ -191,12 +192,11 @@ def evaluate_dataset(
             - db_id: str
             - question: str (optional)
         spider_dir: Path to Spider dataset directory
+        max_concurrent: Maximum number of concurrent evaluations
 
     Returns:
         DatasetEvaluationResult with aggregated metrics
     """
-    from pathlib import Path
-
     spider_dir = Path(spider_dir)
     total = len(predictions)
     ex_correct = 0
@@ -204,14 +204,26 @@ def evaluate_dataset(
     valid_count = 0
     errors = []
 
-    for i, pred in enumerate(predictions):
-        db_path = spider_dir / "database" / pred["db_id"] / f"{pred['db_id']}.sqlite"
+    # Create semaphore to limit concurrent database connections
+    semaphore = asyncio.Semaphore(max_concurrent)
 
-        result = evaluate_single(
-            predicted_sql=pred["predicted_sql"],
-            gold_sql=pred["gold_sql"],
-            db_path=str(db_path),
-        )
+    async def evaluate_one(i: int, pred: dict) -> tuple:
+        async with semaphore:
+            db_path = spider_dir / "database" / pred["db_id"] / f"{pred['db_id']}.sqlite"
+
+            result = await evaluate_single(
+                predicted_sql=pred["predicted_sql"],
+                gold_sql=pred["gold_sql"],
+                db_path=str(db_path),
+            )
+
+            return i, pred, result
+
+    # Run evaluations concurrently
+    tasks = [evaluate_one(i, pred) for i, pred in enumerate(predictions)]
+
+    for task in asyncio.as_completed(tasks):
+        i, pred, result = await task
 
         if result.execution_accuracy:
             ex_correct += 1
@@ -240,16 +252,122 @@ def evaluate_dataset(
     )
 
 
-if __name__ == "__main__":
-    # Example usage
-    result = evaluate_single(
+async def evaluate_dataset_iterative(
+        predictions: AsyncIterator[dict],
+        spider_dir: str,
+        max_concurrent: int = 10,
+) -> DatasetEvaluationResult:
+    """
+    Evaluate predictions from an async iterator (memory efficient).
+
+    Args:
+        predictions: AsyncIterator of prediction dicts
+        spider_dir: Path to Spider dataset directory
+        max_concurrent: Maximum number of concurrent evaluations
+
+    Returns:
+        DatasetEvaluationResult with aggregated metrics
+    """
+    spider_dir = Path(spider_dir)
+    total = 0
+    ex_correct = 0
+    em_correct = 0
+    valid_count = 0
+    errors = []
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def evaluate_one(i: int, pred: dict) -> tuple:
+        async with semaphore:
+            db_path = spider_dir / "database" / pred["db_id"] / f"{pred['db_id']}.sqlite"
+
+            result = await evaluate_single(
+                predicted_sql=pred["predicted_sql"],
+                gold_sql=pred["gold_sql"],
+                db_path=str(db_path),
+            )
+
+            return i, pred, result
+
+    pending = set()
+    i = 0
+
+    async for pred in predictions:
+        task = asyncio.create_task(evaluate_one(i, pred))
+        pending.add(task)
+        i += 1
+        total += 1
+
+        # Limit concurrent tasks
+        if len(pending) >= max_concurrent:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                _, pred, result = task.result()
+
+                if result.execution_accuracy:
+                    ex_correct += 1
+                if result.exact_match:
+                    em_correct += 1
+                if result.valid_sql:
+                    valid_count += 1
+
+                if result.execution_error or not result.execution_accuracy:
+                    errors.append({
+                        "index": i - len(pending) - 1,
+                        "question": pred.get("question", ""),
+                        "db_id": pred["db_id"],
+                        "predicted_sql": pred["predicted_sql"],
+                        "gold_sql": pred["gold_sql"],
+                        "error": result.execution_error,
+                        "execution_match": result.execution_accuracy,
+                    })
+
+    # Process remaining tasks
+    if pending:
+        done, _ = await asyncio.wait(pending)
+        for task in done:
+            i, pred, result = task.result()
+
+            if result.execution_accuracy:
+                ex_correct += 1
+            if result.exact_match:
+                em_correct += 1
+            if result.valid_sql:
+                valid_count += 1
+
+            if result.execution_error or not result.execution_accuracy:
+                errors.append({
+                    "index": i,
+                    "question": pred.get("question", ""),
+                    "db_id": pred["db_id"],
+                    "predicted_sql": pred["predicted_sql"],
+                    "gold_sql": pred["gold_sql"],
+                    "error": result.execution_error,
+                    "execution_match": result.execution_accuracy,
+                })
+
+    return DatasetEvaluationResult(
+        total=total,
+        execution_accuracy=ex_correct / total if total > 0 else 0.0,
+        exact_match=em_correct / total if total > 0 else 0.0,
+        valid_sql_rate=valid_count / total if total > 0 else 0.0,
+        errors=errors,
+    )
+
+
+async def main():
+    """Example usage."""
+    result = await evaluate_single(
         predicted_sql="SELECT COUNT(*) FROM singer;",
         gold_sql="SELECT count(*) FROM singer",
         db_path="databases/spider/database/concert_singer/concert_singer.sqlite",
     )
 
-    print(f"Execution Accuracy: {result.execution_accuracy}")
-    print(f"Exact Match: {result.exact_match}")
-    print(f"Valid SQL: {result.valid_sql}")
+    logger.info(f"Execution Accuracy: {result.execution_accuracy}")
+    logger.info(f"Exact Match: {result.exact_match}")
+    logger.info(f"Valid SQL: {result.valid_sql}")
     if result.execution_error:
-        print(f"Error: {result.execution_error}")
+        logger.info(f"Error: {result.execution_error}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
