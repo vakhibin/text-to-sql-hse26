@@ -2,6 +2,7 @@
 
 from langgraph.graph import END, START, StateGraph
 
+from text_to_sql_agent.config import settings
 from text_to_sql_agent.agents.decomposer import run_decomposer
 from text_to_sql_agent.agents.generator import run_generator
 from text_to_sql_agent.agents.judge import run_judge
@@ -10,10 +11,13 @@ from text_to_sql_agent.agents.selector import run_selector
 from text_to_sql_agent.graph.state import SQLAgentState
 
 
-def _should_refine(state: SQLAgentState) -> str:
-    if state.get("error_message") and state.get("refine_attempts", 0) < 3:
-        return "refiner"
-    return END
+def _route_after_refiner(state: SQLAgentState) -> str:
+    """Route graph based on refiner status and max attempts policy."""
+    has_error = bool(state.get("error_message"))
+    attempts = state.get("refine_attempts", 0)
+    if has_error and attempts < settings.max_refine_attempts:
+        return "retry_refiner"
+    return "finish"
 
 
 def build_graph():
@@ -31,7 +35,11 @@ def build_graph():
     graph.add_edge("decomposer", "generator")
     graph.add_edge("generator", "judge")
     graph.add_edge("judge", "refiner")
-    graph.add_conditional_edges("refiner", _should_refine, {"refiner": "refiner", END: END})
+    graph.add_conditional_edges(
+        "refiner",
+        _route_after_refiner,
+        {"retry_refiner": "refiner", "finish": END},
+    )
 
     return graph.compile()
 

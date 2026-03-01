@@ -23,10 +23,20 @@ class AgentSettings(BaseSettings):
     judge_model: str = "openai/gpt-4.1"
     embeddings_model: str = "openai/text-embedding-3-small"
 
+    # Data and retrieval paths
+    spider_root: str = "databases/spider"
+    chroma_persist_directory: str = ".cache/chroma"
+    chroma_collection_selector: str = "schema_selector"
+
     # Ensemble defaults
     num_candidates: int = 8
     primary_calls: int = 5
     secondary_calls: int = 3
+
+    # Selector defaults
+    selector_top_k_tables: int = 15
+    selector_target_tables_min: int = 3
+    selector_target_tables_max: int = 5
 
     # LLM generation defaults
     llm_temperature_primary: float = 0.2
