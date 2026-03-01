@@ -255,12 +255,23 @@ async def run_evaluation(
     )
 
     # Initialize embeddings asynchronously
+    vector_store = None
     embeddings = None
     if use_schema_linking and settings.openrouter_api_key:
         embeddings = await create_embeddings(
             api_key=settings.openrouter_api_key,
             model=settings.embedding_model,
         )
+
+    vector_store = None
+    if use_schema_linking and embeddings:
+        from app.schema_linker.vector_storages.chromadb import ChromaSchemaStore
+        vector_store = ChromaSchemaStore(
+            embeddings=embeddings,
+            collection_name="spider_schemas",
+            persist_directory="./chroma_db"
+        )
+        await vector_store.initialize()
 
     # Create pipeline
     pipeline = TextToSQLPipeline(
@@ -269,6 +280,7 @@ async def run_evaluation(
         spider_dir=spider_dir,
         generation_mode=GenerationMode.DIRECT,
         use_schema_linking=use_schema_linking,
+        vector_store=vector_store
     )
 
     # Create runner

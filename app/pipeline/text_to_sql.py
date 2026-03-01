@@ -47,6 +47,7 @@ class TextToSQLPipeline:
         self,
         llm: BaseChatModel,
         embeddings: Optional[Embeddings] = None,
+        vector_store: Optional['ChromaSchemaStore'] = None,
         spider_dir: str | Path = "databases/spider",
         generation_mode: GenerationMode = GenerationMode.DIRECT,
         system_prompt: Optional[str] = None,
@@ -84,6 +85,7 @@ class TextToSQLPipeline:
         # Cache for schema linkers (one per db_id)
         self._schema_linkers: Dict[str, SpiderSchemaLinker] = {}
         self._linker_lock = asyncio.Lock()
+        self._vector_store = vector_store
 
     def _default_system_prompt(self) -> str:
         return """You are an expert SQL assistant specialized in generating accurate SQL queries from natural language questions.
@@ -149,11 +151,14 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
         schema_linker = await self._get_schema_linker(db_id)
 
         if self._use_schema_linking:
-            linked_schema = await schema_linker.link(
+            linked_schema = await schema_linker.link_with_vector_store(
                 question=question,
                 evidence=evidence,
+                vector_store=self._vector_store,
                 top_k_tables=self._top_k_tables,
                 top_k_columns=self._top_k_columns,
+                db_id=db_id,
+                use_cache=True
             )
         else:
             # Use full schema
@@ -243,6 +248,7 @@ async def main():
     from app.core.llm import create_llm
     from app.core.embeddings import create_embeddings
     from app.settings import settings
+    from app.schema_linker.vector_storages.chromadb import ChromaSchemaStore
 
     if not settings.openrouter_api_key:
         raise NoTokenProvidedError("API key wasn't provided")
@@ -261,10 +267,18 @@ async def main():
         model=settings.embedding_model,
     )
 
+    vector_store = ChromaSchemaStore(
+        embeddings=embeddings,
+        collection_name="spider_schemas",
+        persist_directory="./chroma_db"
+    )
+    await vector_store.initialize()
+
     # Create pipeline
     pipeline = TextToSQLPipeline(
         llm=llm,
         embeddings=embeddings,
+        vector_store=vector_store,
         spider_dir="databases/spider",
         generation_mode=GenerationMode.DIRECT,
         use_schema_linking=True,

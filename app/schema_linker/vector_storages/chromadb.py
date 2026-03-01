@@ -133,34 +133,44 @@ class ChromaSchemaStore:
 
         return table_results, column_results
 
+
     async def search_relevant_by_embedding(
-        self,
-        query_embedding: List[float],
-        top_k_tables: int = 5,
-        top_k_columns: int = 10,
-        db_id: Optional[str] = None
+            self,
+            query_embedding: List[float],
+            top_k_tables: int = 5,
+            top_k_columns: int = 10,
+            db_id: Optional[str] = None
     ) -> Tuple[List[Document], List[Document]]:
         """Search for relevant tables and columns using query embedding."""
         if not self._vector_store:
             await self.initialize()
 
-        # Build filter if db_id specified
-        filter_dict = {}
+        # Build filter with $and for multiple conditions
+        filter_conditions = [{"type": {"$eq": "table"}}]
         if db_id:
-            filter_dict = {"db_id": db_id}
+            filter_conditions.append({"db_id": {"$eq": db_id}})
+
+        table_filter = {"$and": filter_conditions} if len(filter_conditions) > 1 else filter_conditions[0]
 
         # Search for tables
         table_results = await self._vector_store.asimilarity_search_by_vector(
             embedding=query_embedding,
             k=top_k_tables * 2,
-            filter={"type": "table", **filter_dict}
+            filter=table_filter
         )
+
+        # For columns
+        filter_conditions = [{"type": {"$eq": "column"}}]
+        if db_id:
+            filter_conditions.append({"db_id": {"$eq": db_id}})
+
+        column_filter = {"$and": filter_conditions} if len(filter_conditions) > 1 else filter_conditions[0]
 
         # Search for columns
         column_results = await self._vector_store.asimilarity_search_by_vector(
             embedding=query_embedding,
             k=top_k_columns * 2,
-            filter={"type": "column", **filter_dict}
+            filter=column_filter
         )
 
         return table_results, column_results
