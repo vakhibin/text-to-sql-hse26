@@ -208,3 +208,7 @@ __marimo__/
 
 databases/
 outputs/
+
+# Vector storages
+*.sqlite
+chroma_db/

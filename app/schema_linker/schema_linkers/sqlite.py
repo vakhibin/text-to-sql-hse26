@@ -4,7 +4,7 @@ import asyncio
 from langchain_core.embeddings import Embeddings
 
 from app.core.db import SQLiteDatabase
-from app.schema_linker.base import BaseSchemaLinker, TableInfo
+from app.schema_linker.schema_linkers.base import BaseSchemaLinker, TableInfo
 
 
 class SQLiteSchemaLinker(BaseSchemaLinker):

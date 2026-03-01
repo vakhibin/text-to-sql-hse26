@@ -5,9 +5,11 @@ import asyncio
 
 import numpy as np
 from langchain_core.embeddings import Embeddings
+from redisvl.extensions.cache.embeddings import EmbeddingsCache
 
 from app.core.embeddings import cosine_similarity
-
+from app.core.logger import logger
+from app.settings import settings
 
 @dataclass
 class TableInfo:
@@ -80,10 +82,20 @@ class LinkedSchema:
 class BaseSchemaLinker(ABC):
     """Abstract base class for schema linkers."""
 
-    def __init__(self, embeddings: Optional[Embeddings] = None):
+    def __init__(
+            self,
+            embeddings: Optional[Embeddings] = None,
+            redis_url: str = "redis://localhost:6379"
+    ):
         self._embeddings = embeddings
         self._schema_cache: Optional[List[TableInfo]] = None
         self._cache_lock = asyncio.Lock()
+        self._redis_cache = EmbeddingsCache(
+            name="query_cache",  # name prefix for Redis keys
+            redis_url=redis_url,  # Redis connection URL
+            ttl=None  # Optional TTL in seconds (None means no expiration)
+        )
+        self._logger = logger
 
     @abstractmethod
     async def get_full_schema(self) -> List[TableInfo]:
@@ -183,3 +195,116 @@ class BaseSchemaLinker(ABC):
             table_scores=table_scores_dict,
             column_scores=column_scores_dict,
         )
+
+
+    async def _get_query_embedding_with_cache(
+            self,
+            query: str,
+            use_cache: bool = True
+    ):
+        """Get query embedding from cache or compute it."""
+        if use_cache and self._redis_cache:
+            try:
+                # Try to get from cache
+                cached = self._redis_cache.get(text=query)
+                if cached and "embedding" in cached:
+                    return np.array(cached["embedding"])
+            except Exception as e:
+                # Log error and continue without cache
+                self._logger.error(f"Cache retrieval error: {e}")
+
+        # Compute embedding if not in cache
+        embedding = await self._embeddings.aembed_query(query)
+
+        # Store in cache if enabled
+        if use_cache and self._redis_cache:
+            await self._set_query_embedding_with_cache(query, embedding)
+
+        return embedding
+
+    async def _set_query_embedding_with_cache(
+            self,
+            query: str,
+            embedding: List[float]
+    ):
+        """Store query embedding in cache."""
+        try:
+            # Optional metadata
+            metadata = {"type": "query_embedding"}
+
+            # Store in cache
+            key = self._redis_cache.set(
+                text=query,
+                model_name=self._embeddings.model if hasattr(self._embeddings, 'model') else "unknown",
+                embedding=embedding,
+                metadata=metadata
+            )
+            self._logger.debug(f"Embedding for query {query} was stored with key: {key[:10]} ...")
+        except Exception as e:
+            self._logger.error(f"Cache storage error: {e}")
+
+    async def initialize_vector_store(
+            self,
+            vector_store: 'ChromaSchemaStore',
+            db_id: str
+    ):
+        """Initialize vector store with schema data."""
+        tables = await self.get_full_schema()
+        await vector_store.add_schema(db_id, tables)
+
+    async def link_with_vector_store(
+            self,
+            question: str,
+            vector_store: 'ChromaSchemaStore',
+            db_id: str,
+            evidence: Optional[str] = None,
+            top_k_tables: int = 5,
+            top_k_columns: int = 10,
+            use_cache: bool = True
+    ) -> LinkedSchema:
+        """
+        Link question to schema using vector store.
+        """
+        query_text = question
+        if evidence:
+            query_text = f"{question} {evidence}"
+
+        # 1. Получаем эмбеддинг через кэш
+        query_emb = await self._get_query_embedding_with_cache(query_text, use_cache)
+
+        # 2. Ищем в векторной БД по эмбеддингу, а не по тексту
+        # Для этого нужно модифицировать search_relevant или добавить новый метод
+        table_results, column_results = await vector_store.search_relevant_by_embedding(
+            query_embedding=query_emb,
+            top_k_tables=top_k_tables,
+            top_k_columns=top_k_columns,
+            db_id=db_id
+        )
+
+        # Build result from search results
+        tables_dict = {t.name: t for t in await self.get_full_schema()}
+        result_tables = []
+        table_scores_dict = {}
+        column_scores_dict = {}
+
+        # Process table results
+        for doc in table_results[:top_k_tables]:
+            table_name = doc.metadata["table_name"]
+            if table_name in tables_dict:
+                result_tables.append(tables_dict[table_name])
+                table_scores_dict[table_name] = 1.0  # Score from similarity
+
+        # Process column results
+        for doc in column_results[:top_k_columns]:
+            table_name = doc.metadata["table_name"]
+            column_name = doc.metadata["column_name"]
+            if table_name not in column_scores_dict:
+                column_scores_dict[table_name] = {}
+            column_scores_dict[table_name][column_name] = 1.0
+
+        return LinkedSchema(
+            tables=result_tables,
+            table_scores=table_scores_dict,
+            column_scores=column_scores_dict
+        )
+

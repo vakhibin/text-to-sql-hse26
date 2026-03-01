@@ -6,7 +6,7 @@ from typing import List, Dict, Optional
 
 from langchain_core.embeddings import Embeddings
 
-from app.schema_linker.base import BaseSchemaLinker, TableInfo
+from app.schema_linker.schema_linkers.base import BaseSchemaLinker, TableInfo
 
 
 class SpiderSchemaLinker(BaseSchemaLinker):
