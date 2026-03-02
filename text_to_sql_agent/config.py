@@ -32,6 +32,9 @@ class AgentSettings(BaseSettings):
     num_candidates: int = 8
     primary_calls: int = 5
     secondary_calls: int = 3
+    few_shot_examples_per_candidate: int = 2
+    few_shot_max_pool_size: int = 3000
+    few_shot_seed: int = 42
 
     # Selector defaults
     selector_top_k_tables: int = 15

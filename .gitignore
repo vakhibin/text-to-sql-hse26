@@ -208,3 +208,5 @@ __marimo__/
 
 databases/
 outputs/
+PROJECT_PLAN.md
+probe_openrouter.py
