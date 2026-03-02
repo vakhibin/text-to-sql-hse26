@@ -12,6 +12,34 @@ from text_to_sql_agent.agents.selector import run_selector
 from text_to_sql_agent.graph.state import SQLAgentState
 
 
+def _route_after_selector(state: SQLAgentState) -> str:
+    """Stop early when schema selection cannot proceed."""
+    if state.get("stage_status", {}).get("selector") == "failed":
+        return "finish"
+    return "decomposer"
+
+
+def _route_after_generator(state: SQLAgentState) -> str:
+    """Proceed only if generation produced at least one candidate."""
+    if state.get("candidates"):
+        return "execution_filter"
+    return "finish"
+
+
+def _route_after_execution_filter(state: SQLAgentState) -> str:
+    """Judge valid candidates or fall back to raw generated candidates."""
+    if state.get("valid_candidates") or state.get("candidates"):
+        return "judge"
+    return "finish"
+
+
+def _route_after_judge(state: SQLAgentState) -> str:
+    """Refiner needs a selected SQL candidate."""
+    if state.get("best_sql"):
+        return "refiner"
+    return "finish"
+
+
 def _route_after_refiner(state: SQLAgentState) -> str:
     """Route graph based on refiner status and max attempts policy."""
     has_error = bool(state.get("error_message"))
@@ -33,11 +61,27 @@ def build_graph():
     graph.add_node("refiner", run_refiner)
 
     graph.add_edge(START, "selector")
-    graph.add_edge("selector", "decomposer")
+    graph.add_conditional_edges(
+        "selector",
+        _route_after_selector,
+        {"decomposer": "decomposer", "finish": END},
+    )
     graph.add_edge("decomposer", "generator")
-    graph.add_edge("generator", "execution_filter")
-    graph.add_edge("execution_filter", "judge")
-    graph.add_edge("judge", "refiner")
+    graph.add_conditional_edges(
+        "generator",
+        _route_after_generator,
+        {"execution_filter": "execution_filter", "finish": END},
+    )
+    graph.add_conditional_edges(
+        "execution_filter",
+        _route_after_execution_filter,
+        {"judge": "judge", "finish": END},
+    )
+    graph.add_conditional_edges(
+        "judge",
+        _route_after_judge,
+        {"refiner": "refiner", "finish": END},
+    )
     graph.add_conditional_edges(
         "refiner",
         _route_after_refiner,
