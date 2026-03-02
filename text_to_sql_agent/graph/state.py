@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal, Optional, TypedDict
 from uuid import uuid4
 
-StageName = Literal["selector", "decomposer", "generator", "judge", "refiner"]
+StageName = Literal["selector", "decomposer", "generator", "execution_filter", "judge", "refiner"]
 StageRunStatus = Literal["pending", "running", "success", "failed", "skipped"]
 ComplexityLevel = Literal["simple", "moderate", "complex", "unknown"]
 
@@ -67,6 +67,10 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
         "required_fields": ("candidates", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
     },
+    "execution_filter": {
+        "required_fields": ("valid_candidates", "stage_status"),
+        "optional_fields": ("warnings", "stage_timings", "error_message"),
+    },
     "judge": {
         "required_fields": ("best_sql", "judge_reasoning", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
@@ -84,6 +88,7 @@ def default_stage_status() -> dict[StageName, StageRunStatus]:
         "selector": "pending",
         "decomposer": "pending",
         "generator": "pending",
+        "execution_filter": "pending",
         "judge": "pending",
         "refiner": "pending",
     }
@@ -95,6 +100,7 @@ def default_stage_timings() -> dict[StageName, float]:
         "selector": 0.0,
         "decomposer": 0.0,
         "generator": 0.0,
+        "execution_filter": 0.0,
         "judge": 0.0,
         "refiner": 0.0,
     }

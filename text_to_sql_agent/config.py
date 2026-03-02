@@ -56,6 +56,9 @@ class AgentSettings(BaseSettings):
     # Refiner defaults
     max_refine_attempts: int = 3
 
+    # Execution filter defaults
+    execution_timeout_seconds: int = 20
+
 
 settings = AgentSettings()
 
