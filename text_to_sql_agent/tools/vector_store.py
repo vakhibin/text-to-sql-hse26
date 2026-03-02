@@ -45,6 +45,8 @@ class VectorStoreClient:
     ):
         self.collection_name = collection_name
         self.persist_directory = str(persist_directory)
+        self._indexed_db_ids: set[str] = set()
+        self._index_lock = asyncio.Lock()
         if not settings.openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required for vector embeddings")
         self._vector_store = Chroma(
@@ -62,11 +64,22 @@ class VectorStoreClient:
         if not docs:
             return
         ids = [f"{db_id}:{doc.metadata['table_name']}" for doc in docs]
+        # Re-index deterministically for this db_id.
+        try:
+            self._vector_store.delete(ids=ids)
+        except Exception:
+            pass
         self._vector_store.add_documents(documents=docs, ids=ids)
 
     async def index_schema(self, db_id: str, schema: dict[str, Any]) -> None:
         """Index table-level documents for a specific database schema."""
-        await asyncio.to_thread(self._index_schema_sync, db_id, schema)
+        if db_id in self._indexed_db_ids:
+            return
+        async with self._index_lock:
+            if db_id in self._indexed_db_ids:
+                return
+            await asyncio.to_thread(self._index_schema_sync, db_id, schema)
+            self._indexed_db_ids.add(db_id)
 
     def _query_tables_sync(self, query: str, db_id: str, top_k: int) -> list[dict[str, Any]]:
         docs = self._vector_store.similarity_search_with_relevance_scores(

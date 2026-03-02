@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from functools import lru_cache
 from typing import Any
 
 from text_to_sql_agent.config import settings
@@ -12,6 +13,11 @@ from text_to_sql_agent.prompts.selector import build_selector_rerank_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
 from text_to_sql_agent.tools.schema_loader import load_schema, to_mschema
 from text_to_sql_agent.tools.vector_store import build_vector_store
+
+
+@lru_cache(maxsize=1)
+def _get_vector_store():
+    return build_vector_store(collection_name=settings.chroma_collection_selector)
 
 
 def _filter_schema_tables(schema: dict[str, Any], selected: list[str]) -> dict[str, Any]:
@@ -45,7 +51,7 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         db_id = state["db_id"]
         schema = await load_schema(db_id)
 
-        vector_store = build_vector_store(collection_name=settings.chroma_collection_selector)
+        vector_store = _get_vector_store()
         await vector_store.index_schema(db_id=db_id, schema=schema)
         candidates = await vector_store.query_tables(
             query=question,
