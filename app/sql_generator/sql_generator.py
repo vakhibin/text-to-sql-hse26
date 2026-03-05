@@ -28,7 +28,7 @@ class SQLGenerationResult:
     generation_time: float = 0.0
     metadata: Optional[Dict] = None
 
-TEST_QUERY = False
+TEST_QUERY = True
 
 class SQLGenerator:
     def __init__(
@@ -314,7 +314,7 @@ async def main():
     """Async test function."""
     if TEST_QUERY:
         from app.settings import settings
-
+        print("Model:", settings.llm_model)
         llm = await create_llm(
             provider=settings.llm_provider,
             model=settings.llm_model,
@@ -330,19 +330,25 @@ async def main():
             system_prompt="You are an expert SQL assistant. Output only SQL."
         )
 
-        schema = """
-        employees (id, name, department_id, hire_date, salary)
-        departments (id, name, manager_id)
-        projects (id, name, department_id, budget, start_date, end_date)
+        schema = \
+        """
+        Table: airlines
+        Columns: Abbreviation (TEXT), uid (NUMBER), Airline (TEXT), Country (TEXT)
+        Primary keys: uid
+
+        Table: flights
+        Columns: SourceAirport (TEXT), DestAirport (TEXT), Airline (NUMBER), FlightNo (NUMBER)
+        Primary keys: Airline
+        Foreign keys: DestAirport -> airports.AirportCode, SourceAirport -> airports.AirportCode
         """
 
-        question = "Show all employees in the Sales department with salary above 50000"
+        question = "Which airline has most number of flights?"
 
         try:
             result = await generator.agenerate_sql(
                 question=question,
                 schema=schema,
-                db_id="company_db"
+                db_id="flight_2"
             )
 
             print("SQL generated successfully!")

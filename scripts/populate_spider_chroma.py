@@ -11,18 +11,18 @@ from app.core.embeddings import create_embeddings
 from app.schema_linker.schema_linkers.spider import SpiderSchemaLinker
 from app.core.logger import logger
 
+
 class ChromaSpiderCLI:
     async def _populate_one(
             self,
-            collection_name: str,
             spider_dir: str,
             db_id: str,
             persist_dir: str,
+            collection_name: str,
     ):
-        embeddings = create_embeddings(
-            provider="openrouter",
-            model="qwen/qwen3-embedding-8b",
-            api_key=settings.openrouter_api_key
+        embeddings = await create_embeddings(
+            api_key=settings.openrouter_api_key,
+            model=settings.embedding_model,
         )
         vector_storage = ChromaSchemaStore(
             embeddings=embeddings,
@@ -31,7 +31,7 @@ class ChromaSpiderCLI:
         )
         await vector_storage.initialize()
 
-        linker = SpiderSchemaLinker.from_spider_dir(
+        linker = await SpiderSchemaLinker.from_spider_dir(
             spider_dir=spider_dir,
             db_id=db_id,
             embeddings=embeddings
@@ -39,8 +39,9 @@ class ChromaSpiderCLI:
 
         tables = await linker.get_full_schema()
         await vector_storage.add_schema(db_id, tables)
-        logger.info(f"Added {db_id} to {persist_dir} (collection: {collection_name})")
-
+        logger.info(
+            f"Added {db_id} to {persist_dir} (collection: {collection_name})"
+        )
 
     async def _populate_all(
             self,
@@ -92,7 +93,10 @@ class ChromaSpiderCLI:
                 sleep_between=sleep_between
             )
 
-        logger.info(f"Added {len(schemas)} databases to {persist_dir} (collection: {collection_name})")
+        logger.info(
+            f"Added {len(schemas)} databases to {persist_dir} "
+            f"(collection: {collection_name})"
+        )
 
     def populate_one(
             self,
@@ -102,7 +106,9 @@ class ChromaSpiderCLI:
             collection: str = "spider_schemas"
     ):
         """Populate single database."""
-        asyncio.run(self._populate_one(spider_dir, db_id, persist_dir, collection))
+        asyncio.run(
+            self._populate_one(spider_dir, db_id, persist_dir, collection)
+        )
 
     def populate_all(
             self,
@@ -136,7 +142,7 @@ class ChromaSpiderCLI:
 
         try:
             collection = client.get_collection(collection)
-        except:
+        except Exception:
             print(f"Collection '{collection}' not found")
             return
 
@@ -155,7 +161,9 @@ class ChromaSpiderCLI:
 
         # Examples
         print(f"\n📄 Samples (first {limit}):")
-        for i, (doc_id, metadata) in enumerate(zip(results['ids'][:limit], results['metadatas'][:limit])):
+        for i, (doc_id, metadata) in enumerate(
+            zip(results["ids"][:limit], results["metadatas"][:limit])
+        ):
             print(f"\n{i + 1}. ID: {doc_id}")
             print(f"   Metadata: {metadata}")
 

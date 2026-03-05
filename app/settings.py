@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # LLM settings
     llm_provider: str = "openrouter"  # "openrouter" or "ollama"
-    llm_model: str = "deepseek/deepseek-r1-0528:free"
+    llm_model: str = "openai/gpt-oss-20b"
     llm_temperature: float = 0.0
     llm_max_tokens: int = 512
 

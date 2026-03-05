@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
@@ -59,7 +59,7 @@ class ChromaSchemaStore:
 
         # Add tables
         for table in tables:
-            doc_text = f"database: {db_id} table: {table.name} columns: {', '.join(table.columns)}"
+            doc_text = f"table {table.name}"
             table_id = f"{db_id}_table_{table.name}"
 
             if not check_existing or table_id not in existing_ids:
@@ -78,7 +78,7 @@ class ChromaSchemaStore:
             for col in table.columns:
                 col_id = f"{db_id}_column_{table.name}_{col}"
                 if not check_existing or col_id not in existing_ids:
-                    col_text = f"database: {db_id} table: {table.name} column: {col} type: {table.column_types.get(col, 'UNKNOWN')}"
+                    col_text = f"column {col} in table {table.name}"
                     documents.append(Document(
                         page_content=col_text,
                         metadata={
@@ -133,44 +133,81 @@ class ChromaSchemaStore:
 
         return table_results, column_results
 
-
     async def search_relevant_by_embedding(
-            self,
-            query_embedding: List[float],
-            top_k_tables: int = 5,
-            top_k_columns: int = 10,
-            db_id: Optional[str] = None
+        self,
+        query_embedding: List[float],
+        top_k_tables: int = 5,
+        top_k_columns: int = 10,
+        db_id: Optional[str] = None
     ) -> Tuple[List[Document], List[Document]]:
         """Search for relevant tables and columns using query embedding."""
         if not self._vector_store:
             await self.initialize()
 
-        # Build filter with $and for multiple conditions
-        filter_conditions = [{"type": {"$eq": "table"}}]
+        # 1. Сначала ищем таблицы (глобально)
+        table_filter = {"$and": [{"type": {"$eq": "table"}}]}
         if db_id:
-            filter_conditions.append({"db_id": {"$eq": db_id}})
-
-        table_filter = {"$and": filter_conditions} if len(filter_conditions) > 1 else filter_conditions[0]
-
-        # Search for tables
+            table_filter["$and"].append({"db_id": {"$eq": db_id}})
+        
         table_results = await self._vector_store.asimilarity_search_by_vector(
             embedding=query_embedding,
-            k=top_k_tables * 2,
+            k=top_k_tables,
             filter=table_filter
         )
-
-        # For columns
-        filter_conditions = [{"type": {"$eq": "column"}}]
-        if db_id:
-            filter_conditions.append({"db_id": {"$eq": db_id}})
-
-        column_filter = {"$and": filter_conditions} if len(filter_conditions) > 1 else filter_conditions[0]
-
-        # Search for columns
-        column_results = await self._vector_store.asimilarity_search_by_vector(
-            embedding=query_embedding,
-            k=top_k_columns * 2,
-            filter=column_filter
-        )
-
+        
+        # 2. Для каждой найденной таблицы ищем её колонки
+        column_results = []
+        for table_doc in table_results:
+            table_name = table_doc.metadata["table_name"]
+            
+            column_filter = {"$and": [
+                {"type": {"$eq": "column"}},
+                {"db_id": {"$eq": db_id}},
+                {"table_name": {"$eq": table_name}}
+            ]}
+            
+            cols = await self._vector_store.asimilarity_search_by_vector(
+                embedding=query_embedding,
+                k=top_k_columns,
+                filter=column_filter
+            )
+            column_results.extend(cols)
+        
         return table_results, column_results
+
+    async def get_embeddings_by_ids(self, ids: List[str]) -> Dict[str, List[float]]:
+        """Fetch stored embeddings for given Chroma document ids.
+
+        Returns:
+            Mapping from id -> embedding (list[float]). Missing ids are omitted.
+        """
+        if not ids:
+            return {}
+
+        if not self._vector_store:
+            await self.initialize()
+
+        try:
+            data = self._vector_store.get(ids=ids, include=["embeddings"])
+        except TypeError:
+            # Some versions may not support include=...; fallback to default get()
+            data = self._vector_store.get(ids=ids)
+
+        out: Dict[str, List[float]] = {}
+        if not data:
+            return out
+
+        got_ids = data.get("ids")
+        got_embs = data.get("embeddings")
+
+        if got_ids is None:
+            got_ids = []
+        if got_embs is None:
+            got_embs = []
+
+        for _id, emb in zip(got_ids, got_embs):
+            if emb is None:
+                continue
+            out[_id] = list(emb)
+
+        return out

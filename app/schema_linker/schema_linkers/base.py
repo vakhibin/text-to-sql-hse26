@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, TYPE_CHECKING
 import asyncio
 
 import numpy as np
@@ -10,6 +10,9 @@ from redisvl.extensions.cache.embeddings import EmbeddingsCache
 from app.core.embeddings import cosine_similarity
 from app.core.logger import logger
 from app.settings import settings
+
+if TYPE_CHECKING:
+    from app.schema_linker.vector_storages.chromadb import ChromaSchemaStore
 
 @dataclass
 class TableInfo:
@@ -196,28 +199,31 @@ class BaseSchemaLinker(ABC):
             column_scores=column_scores_dict,
         )
 
-
     async def _get_query_embedding_with_cache(
             self,
             query: str,
             use_cache: bool = True
     ):
         """Get query embedding from cache or compute it."""
-        if use_cache and self._redis_cache:
+        # NOTE: EmbeddingsCache may be "falsy" even when initialized (e.g. __len__ == 0),
+        # so we explicitly check for None instead of relying on truthiness.
+        if use_cache and self._redis_cache is not None:
             try:
                 # Try to get from cache
-                cached = self._redis_cache.get(text=query)
+                cached = self._redis_cache.get(
+                    content=query,
+                      model_name=self._embeddings.model if hasattr(self._embeddings, 'model') else "unknown"
+                )
                 if cached and "embedding" in cached:
                     return np.array(cached["embedding"])
             except Exception as e:
-                # Log error and continue without cache
-                self._logger.error(f"Cache retrieval error: {e}")
+                self._logger.error("Cache retrieval error:", repr(e))
 
         # Compute embedding if not in cache
         embedding = await self._embeddings.aembed_query(query)
 
         # Store in cache if enabled
-        if use_cache and self._redis_cache:
+        if use_cache and self._redis_cache is not None:
             await self._set_query_embedding_with_cache(query, embedding)
 
         return embedding
@@ -234,77 +240,118 @@ class BaseSchemaLinker(ABC):
 
             # Store in cache
             key = self._redis_cache.set(
-                text=query,
+                content=query,
                 model_name=self._embeddings.model if hasattr(self._embeddings, 'model') else "unknown",
                 embedding=embedding,
                 metadata=metadata
             )
             self._logger.debug(f"Embedding for query {query} was stored with key: {key[:10]} ...")
         except Exception as e:
-            self._logger.error(f"Cache storage error: {e}")
+            self._logger.error("Cache storage error:", repr(e))
 
-    async def initialize_vector_store(
-            self,
-            vector_store: 'ChromaSchemaStore',
-            db_id: str
-    ):
-        """Initialize vector store with schema data."""
-        tables = await self.get_full_schema()
-        await vector_store.add_schema(db_id, tables)
 
     async def link_with_vector_store(
-            self,
-            question: str,
-            vector_store: 'ChromaSchemaStore',
-            db_id: str,
-            evidence: Optional[str] = None,
-            top_k_tables: int = 5,
-            top_k_columns: int = 10,
-            use_cache: bool = True
+        self,
+        question: str,
+        vector_store: "ChromaSchemaStore",
+        db_id: str,
+        evidence: Optional[str] = None,
+        top_k_tables: int = 5,
+        top_k_columns: int = 10,
+        use_cache: bool = True
     ) -> LinkedSchema:
         """
-        Link question to schema using vector store.
+        Link question to schema using vector store - идентично формату link()
         """
+        tables = await self.get_full_schema()
+
+        if self._embeddings is None or not tables:
+            return LinkedSchema(tables=tables)
+
         query_text = question
         if evidence:
             query_text = f"{question} {evidence}"
 
-        # 1. Получаем эмбеддинг через кэш
+        # Build schema element texts/ids exactly like in link()
+        table_ids = [f"{db_id}_table_{t.name}" for t in tables]
+        column_ids: List[str] = []
+        column_info = []  # (table_name, column_name)
+        for table in tables:
+            for col in table.columns:
+                column_ids.append(f"{db_id}_column_{table.name}_{col}")
+                column_info.append((table.name, col))
+
+        # 1. Query embedding (same as in link(), just cached)
         query_emb = await self._get_query_embedding_with_cache(query_text, use_cache)
 
-        # 2. Ищем в векторной БД по эмбеддингу, а не по тексту
-        # Для этого нужно модифицировать search_relevant или добавить новый метод
-        table_results, column_results = await vector_store.search_relevant_by_embedding(
-            query_embedding=query_emb,
-            top_k_tables=top_k_tables,
-            top_k_columns=top_k_columns,
-            db_id=db_id
+        # 2. Fetch schema embeddings from vector store (not recomputing them)
+        table_emb_map = await vector_store.get_embeddings_by_ids(table_ids)
+        column_emb_map = await vector_store.get_embeddings_by_ids(column_ids)
+
+        # Build embedding arrays in exactly the same order as `link()`
+        missing_tables = [tid for tid in table_ids if tid not in table_emb_map]
+        missing_columns = [cid for cid in column_ids if cid not in column_emb_map]
+        if missing_tables or missing_columns:
+            self._logger.warning(
+                "Missing embeddings in vector store "
+                f"(tables={len(missing_tables)}, columns={len(missing_columns)}) for db_id={db_id}. "
+                "Falling back to computing missing embeddings to preserve behavior."
+            )
+
+        table_embs: List[List[float]] = []
+        for i, tid in enumerate(table_ids):
+            emb = table_emb_map.get(tid)
+            if emb is None:
+                emb = await self._embeddings.aembed_query(f"table {tables[i].name}")
+            table_embs.append(list(emb))
+
+        column_embs: List[List[float]] = []
+        col_idx = 0
+        for table in tables:
+            for col in table.columns:
+                cid = column_ids[col_idx]
+                emb = column_emb_map.get(cid)
+                if emb is None:
+                    emb = await self._embeddings.aembed_query(f"column {col} in table {table.name}")
+                column_embs.append(list(emb))
+                col_idx += 1
+
+        # 3. Compute cosine similarities exactly like in link()
+        table_scores = await asyncio.to_thread(cosine_similarity, query_emb, table_embs)
+        column_scores = await asyncio.to_thread(cosine_similarity, query_emb, column_embs)
+
+        top_table_indices = await asyncio.to_thread(
+            lambda: np.argsort(table_scores)[::-1][:top_k_tables]
         )
 
-        # Build result from search results
-        tables_dict = {t.name: t for t in await self.get_full_schema()}
+        table_scores_dict = {tables[i].name: float(table_scores[i]) for i in top_table_indices}
+        column_scores_dict: Dict[str, Dict[str, float]] = {}
+
         result_tables = []
-        table_scores_dict = {}
-        column_scores_dict = {}
+        for table_idx in top_table_indices:
+            table = tables[table_idx]
 
-        # Process table results
-        for doc in table_results[:top_k_tables]:
-            table_name = doc.metadata["table_name"]
-            if table_name in tables_dict:
-                result_tables.append(tables_dict[table_name])
-                table_scores_dict[table_name] = 1.0  # Score from similarity
+            table_column_scores = []
+            for cidx, (col_table, col_name) in enumerate(column_info):
+                if col_table == table.name:
+                    table_column_scores.append((col_name, float(column_scores[cidx])))
 
-        # Process column results
-        for doc in column_results[:top_k_columns]:
-            table_name = doc.metadata["table_name"]
-            column_name = doc.metadata["column_name"]
-            if table_name not in column_scores_dict:
-                column_scores_dict[table_name] = {}
-            column_scores_dict[table_name][column_name] = 1.0
+            table_column_scores.sort(key=lambda x: x[1], reverse=True)
+            top_columns = table_column_scores[:top_k_columns]
+
+            column_scores_dict[table.name] = {col: score for col, score in top_columns}
+
+            selected_columns = [col for col, _ in top_columns]
+            result_tables.append(TableInfo(
+                name=table.name,
+                columns=selected_columns,
+                column_types={col: table.column_types[col] for col in selected_columns},
+                primary_keys=[pk for pk in table.primary_keys if pk in selected_columns],
+                foreign_keys=[fk for fk in table.foreign_keys if fk[0] in selected_columns],
+            ))
 
         return LinkedSchema(
             tables=result_tables,
             table_scores=table_scores_dict,
-            column_scores=column_scores_dict
+            column_scores=column_scores_dict,
         )
-

@@ -165,7 +165,7 @@ async def main():
 
         linker = await SpiderSchemaLinker.from_spider_dir(
             spider_dir=spider_dir,
-            db_id="concert_singer",
+            db_id="flight_2",
             embeddings=embeddings,
         )
 
@@ -177,7 +177,7 @@ async def main():
         # Link to question
         print("\n=== Linked Schema ===")
         linked = await linker.link(
-            question="How many singers are there?",
+            question="Which airline has most number of flights?",
             top_k_tables=2,
         )
         print(linked.to_schema_string())
