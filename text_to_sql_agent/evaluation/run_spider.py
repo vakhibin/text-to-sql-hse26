@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import sys
+
 import kagglehub
+from tqdm import tqdm
 
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.evaluation.metrics import BenchmarkMetrics, exact_match
@@ -141,21 +144,51 @@ async def run_spider_benchmark(
     spider_root: Path,
     split: str,
     max_examples: int | None,
+    concurrency: int = 1,
 ) -> tuple[BenchmarkMetrics, list[dict[str, Any]]]:
     graph = build_graph()
     examples = load_spider_examples(spider_root=spider_root, split=split)
     if max_examples is not None:
         examples = examples[:max_examples]
 
-    predictions: list[dict[str, Any]] = []
-    for example in examples:
-        predictions.append(await _evaluate_one(graph, example, spider_root))
+    semaphore = asyncio.Semaphore(concurrency)
+    results_by_index: dict[int, dict[str, Any]] = {}
+    exec_hits = 0
+    em_hits = 0
+    err_count = 0
+    lock = asyncio.Lock()
 
+    pbar = tqdm(total=len(examples), desc="Spider eval", unit="q", file=sys.stderr)
+
+    async def _worker(idx: int, example: SpiderExample) -> None:
+        nonlocal exec_hits, em_hits, err_count
+        async with semaphore:
+            result = await _evaluate_one(graph, example, spider_root)
+
+        async with lock:
+            results_by_index[idx] = result
+            if result["execution_match"]:
+                exec_hits += 1
+            if result["exact_match"]:
+                em_hits += 1
+            if result.get("error_message"):
+                err_count += 1
+                tqdm.write(
+                    f"  ERROR [{result['db_id']}] {result['question'][:60]}... "
+                    f"-> {result['error_message'][:120]}",
+                    file=sys.stderr,
+                )
+            done = len(results_by_index)
+            pbar.set_postfix(EX=f"{exec_hits/done:.0%}", EM=f"{em_hits/done:.0%}", err=err_count)
+            pbar.update(1)
+
+    await asyncio.gather(*[_worker(i, ex) for i, ex in enumerate(examples)])
+    pbar.close()
+
+    predictions = [results_by_index[i] for i in range(len(examples))]
     total = len(predictions)
-    exec_hits = sum(1 for row in predictions if row["execution_match"])
-    em_hits = sum(1 for row in predictions if row["exact_match"])
     valid = sum(1 for row in predictions if bool(row["predicted_sql"]))
-    errors = sum(1 for row in predictions if bool(row.get("error_message")))
+    errors = err_count
 
     metrics = BenchmarkMetrics(
         execution_accuracy=(exec_hits / total) if total else 0.0,
@@ -175,6 +208,7 @@ def main() -> None:
     parser.add_argument("--smoke-size", type=int, default=20)
     parser.add_argument("--download", action="store_true", default=False, help="Auto-download Spider if missing")
     parser.add_argument("--output", type=str, default="outputs/spider_v1_results.json")
+    parser.add_argument("--concurrency", type=int, default=1, help="Number of examples to evaluate in parallel")
     parser.add_argument("--spider-root", type=str, default=settings.spider_root)
     args = parser.parse_args()
 
@@ -190,6 +224,7 @@ def main() -> None:
             spider_root=spider_root,
             split=args.split,
             max_examples=max_examples,
+            concurrency=args.concurrency,
         )
     )
 
