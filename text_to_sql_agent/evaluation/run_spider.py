@@ -193,7 +193,10 @@ def main() -> None:
         )
     )
 
-    output_path = Path(args.output)
+    from datetime import datetime
+    base = Path(args.output)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = base.with_stem(f"{base.stem}_{stamp}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "split": args.split,

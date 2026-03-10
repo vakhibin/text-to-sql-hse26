@@ -40,6 +40,7 @@ class AgentSettings(BaseSettings):
     selector_top_k_tables: int = 15
     selector_target_tables_min: int = 3
     selector_target_tables_max: int = 5
+    selector_debug: bool = False
 
     # LLM generation defaults
     llm_temperature_primary: float = 0.2

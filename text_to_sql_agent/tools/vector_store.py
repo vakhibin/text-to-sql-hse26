@@ -82,7 +82,7 @@ class VectorStoreClient:
             self._indexed_db_ids.add(db_id)
 
     def _query_tables_sync(self, query: str, db_id: str, top_k: int) -> list[dict[str, Any]]:
-        docs = self._vector_store.similarity_search_with_relevance_scores(
+        docs = self._vector_store.similarity_search(
             query=query,
             k=top_k,
             filter={"db_id": db_id},
@@ -91,10 +91,10 @@ class VectorStoreClient:
             {
                 "table_name": doc.metadata.get("table_name", ""),
                 "db_id": doc.metadata.get("db_id", db_id),
-                "score": float(score),
+                "score": round(1.0 - i / max(len(docs), 1), 4),
                 "content": doc.page_content,
             }
-            for doc, score in docs
+            for i, doc in enumerate(docs)
         ]
 
     async def query_tables(self, query: str, db_id: str, top_k: int = 15) -> list[dict[str, Any]]:

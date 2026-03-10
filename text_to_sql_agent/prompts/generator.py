@@ -49,10 +49,11 @@ mSchema:
 {filtered_schema}
 
 {few_shot_block}Rules:
-1) Use SQLite-compatible SQL.
-2) Prefer explicit JOINs with ON clauses.
-3) Include all required filters from the question.
-4) End query with semicolon.
+1) Use ONLY the tables and columns listed in the mSchema above. Do NOT invent or assume tables/columns that are not explicitly listed.
+2) Use SQLite-compatible SQL.
+3) Prefer explicit JOINs with ON clauses.
+4) Include all required filters from the question.
+5) End query with semicolon.
 
 SQL:
 """.strip()

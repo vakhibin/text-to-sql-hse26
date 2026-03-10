@@ -30,6 +30,10 @@ Return STRICT JSON with exact format:
   "selected_tables": ["table_1", "table_2", "table_3"],
   "reasoning": "short reason"
 }}
+Important:
+- Use table names EXACTLY as they appear in the candidate list.
+- Do not return unknown table names.
+- If only 1-2 tables are relevant, still return them in selected_tables.
 Do not include markdown or extra text.
 """.strip()
 
