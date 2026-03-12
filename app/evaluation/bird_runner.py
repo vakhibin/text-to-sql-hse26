@@ -73,7 +73,12 @@ class BirdEvaluationRunner:
         total_time = (end_time - start_time).total_seconds()
 
         logger.info("Computing evaluation metrics...")
-        evaluation = await evaluate_dataset(predictions, str(self._bird_dir))
+        evaluation = await evaluate_dataset(
+            predictions,
+            str(self._bird_dir),
+            dataset="bird",
+            split=config.split,
+        )
 
         run_result = BirdRunResult(
             config=config,

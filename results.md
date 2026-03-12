@@ -137,3 +137,16 @@ uv run python -m app.evaluation.runner --split dev
    - Коррекция ошибок при невалидном SQL (+2-3% ожидаемо)
    - Улучшенный schema linking с keyword matching (+3-5% ожидаемо)
 
+
+## Bird dev set
+### Summary
+Metrics:
+- Total: 1534
+- Execution Accuracy (EX): 35.01%
+- Exact Match (EM): 2.15%
+- Valid SQL Rate: 81.62%
+- Errors: 997
+
+Validation time:
+- Total time: 1369.32s
+- Avg time per example: 0.89s

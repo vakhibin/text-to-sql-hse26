@@ -94,9 +94,14 @@ class EvaluationRunner:
         end_time = datetime.now()
         total_time = (end_time - start_time).total_seconds()
 
-        # Evaluate predictions
+        # Evaluate predictions (Spider layout)
         logger.info("Computing evaluation metrics...")
-        evaluation = await evaluate_dataset(predictions, str(self._spider_dir))
+        evaluation = await evaluate_dataset(
+            predictions,
+            str(self._spider_dir),
+            dataset="spider",
+            split=config.split,
+        )
 
         # Create result
         run_result = RunResult(
@@ -277,10 +282,11 @@ async def run_evaluation(
     pipeline = TextToSQLPipeline(
         llm=llm,
         embeddings=embeddings,
-        spider_dir=spider_dir,
+        vector_store=vector_store,
+        dataset_dir=spider_dir,
+        dataset_type="spider",
         generation_mode=GenerationMode.DIRECT,
         use_schema_linking=use_schema_linking,
-        vector_store=vector_store
     )
 
     # Create runner

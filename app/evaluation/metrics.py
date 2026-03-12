@@ -177,10 +177,26 @@ async def evaluate_single(
     )
 
 
+def _get_db_path(base_dir: Path, pred: dict, dataset: str, split: str) -> Path:
+    """
+    Resolve path to SQLite database depending on dataset type.
+
+    - spider: base_dir / "database" / db_id / db_id.sqlite
+    - bird:   base_dir / f"{split}_databases" / db_id / db_id.sqlite
+    """
+    db_id = pred["db_id"]
+    if dataset.lower() == "bird":
+        return base_dir / f"{split}_databases" / db_id / f"{db_id}.sqlite"
+    # default: spider-style layout
+    return base_dir / "database" / db_id / f"{db_id}.sqlite"
+
+
 async def evaluate_dataset(
         predictions: List[dict],
-        spider_dir: str,
+        base_dir: str,
         max_concurrent: int = 10,
+        dataset: str = "spider",
+        split: str = "dev",
 ) -> DatasetEvaluationResult:
     """
     Evaluate predictions on a dataset asynchronously with concurrency control.
@@ -191,13 +207,15 @@ async def evaluate_dataset(
             - gold_sql: str
             - db_id: str
             - question: str (optional)
-        spider_dir: Path to Spider dataset directory
+        base_dir:   Path to dataset root directory
         max_concurrent: Maximum number of concurrent evaluations
+        dataset:    Dataset type ("spider" or "bird")
+        split:      Dataset split (used for BIRD to pick *_{split}_databases)
 
     Returns:
         DatasetEvaluationResult with aggregated metrics
     """
-    spider_dir = Path(spider_dir)
+    base_dir = Path(base_dir)
     total = len(predictions)
     ex_correct = 0
     em_correct = 0
@@ -209,7 +227,7 @@ async def evaluate_dataset(
 
     async def evaluate_one(i: int, pred: dict) -> tuple:
         async with semaphore:
-            db_path = spider_dir / "database" / pred["db_id"] / f"{pred['db_id']}.sqlite"
+            db_path = _get_db_path(base_dir, pred, dataset, split)
 
             result = await evaluate_single(
                 predicted_sql=pred["predicted_sql"],
@@ -254,21 +272,25 @@ async def evaluate_dataset(
 
 async def evaluate_dataset_iterative(
         predictions: AsyncIterator[dict],
-        spider_dir: str,
+        base_dir: str,
         max_concurrent: int = 10,
+        dataset: str = "spider",
+        split: str = "dev",
 ) -> DatasetEvaluationResult:
     """
     Evaluate predictions from an async iterator (memory efficient).
 
     Args:
         predictions: AsyncIterator of prediction dicts
-        spider_dir: Path to Spider dataset directory
+        base_dir:   Path to dataset root directory
         max_concurrent: Maximum number of concurrent evaluations
+        dataset:    Dataset type ("spider" or "bird")
+        split:      Dataset split (used for BIRD to pick *_{split}_databases)
 
     Returns:
         DatasetEvaluationResult with aggregated metrics
     """
-    spider_dir = Path(spider_dir)
+    base_dir = Path(base_dir)
     total = 0
     ex_correct = 0
     em_correct = 0
@@ -279,7 +301,7 @@ async def evaluate_dataset_iterative(
 
     async def evaluate_one(i: int, pred: dict) -> tuple:
         async with semaphore:
-            db_path = spider_dir / "database" / pred["db_id"] / f"{pred['db_id']}.sqlite"
+            db_path = _get_db_path(base_dir, pred, dataset, split)
 
             result = await evaluate_single(
                 predicted_sql=pred["predicted_sql"],

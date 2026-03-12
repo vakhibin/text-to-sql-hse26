@@ -191,13 +191,27 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
         result.linked_schema = linked_schema
         result.schema_linking_time = time.time() - schema_start
 
+        #print("linked_schema", linked_schema)
+        #print("full schema", full_schema)
+
         # Step 2: SQL generation (never pass empty schema)
         gen_start = time.time()
         if not linked_schema.tables:
+            #print("Зашли в not linked_schema.tables")
             full_schema = await schema_linker.get_full_schema()
             linked_schema = LinkedSchema(tables=full_schema)
             result.linked_schema = linked_schema
+            #print("full schema after empty", full_schema)
         schema_str = linked_schema.to_create_table_string()
+
+
+        #print("linked_schema after empty", linked_schema)
+        #print("schema_str", schema_str)
+
+        #print("Question", question)
+        #print("schema_str", schema_str)
+        #print("db_id", db_id)
+        #print("evidence", evidence)
 
         generation_result = await self._sql_generator.agenerate_sql(
             question=question,
@@ -205,6 +219,8 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
             db_id=db_id,
             evidence=evidence,
         )
+
+        #print("Gen res", generation_result)
 
         result.predicted_sql = generation_result.sql
         result.generation_result = generation_result
@@ -334,7 +350,7 @@ async def main():
         model=settings.llm_model,
         api_key=settings.openrouter_api_key,
         temperature=settings.llm_temperature,
-        max_tokens=settings.llm_max_tokens,
+        max_tokens=4096,
     )
     pipeline_bird = TextToSQLPipeline(
         llm=llm_bird,

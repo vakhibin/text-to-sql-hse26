@@ -70,12 +70,19 @@ class SQLGenerator:
             prompt = self._build_prompt(question, schema_str, db_id, **kwargs)
             messages = self._build_messages(prompt)
 
+            # print("IN GENERATOR schema str:", schema_str)
+            # print("IN GENERATOR prompt:", prompt)
+            # print("IN GENERATOR schema messages:",messages)
+
             response = await self._llm.ainvoke(messages)
+            #print("Response:", response)
             response_text = self._get_response_content(response)
+            #print("response_text", response_text)
             if isinstance(response_text, bytes):
                 response_text = response_text.decode("utf-8", errors="replace")
 
             sql = self._extract_sql(response_text or "")
+            #   print("Extracted SQL", sql)
 
             reasoning = None
             if self.generation_mode == GenerationMode.COT:

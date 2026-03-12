@@ -59,37 +59,18 @@ class BirdEvaluationCLI:
                 await vector_store.initialize()
                 print(f"✅ Using vector store: {collection}")
         
-        # Override spider_dir with bird_dir but keep the same pipeline class
+        # Create pipeline configured directly for BIRD
         pipeline = TextToSQLPipeline(
             llm=llm,
             embeddings=embeddings,
             vector_store=vector_store,
-            spider_dir=bird_dir,  # Reusing param name but passing bird_dir
+            dataset_dir=bird_dir,
+            dataset_type="bird",
             generation_mode=GenerationMode.DIRECT,
             use_schema_linking=not no_schema_linking,
             top_k_tables=top_k_tables,
             top_k_columns=top_k_columns,
         )
-        
-        # Replace the linker class in the pipeline's _get_schema_linker method
-        # This is a hack but keeps Spider code unchanged
-        original_get_schema_linker = pipeline._get_schema_linker
-        
-        async def bird_get_schema_linker(db_id: str):
-            if db_id not in pipeline._schema_linkers:
-                async with pipeline._linker_lock:
-                    if db_id not in pipeline._schema_linkers:
-                        pipeline._schema_linkers[db_id] = await BirdSchemaLinker.from_bird_dir(
-                            bird_dir=bird_dir,
-                            db_id=db_id,
-                            split=split,
-                            embeddings=pipeline._embeddings if pipeline._use_schema_linking else None,
-                        )
-            return pipeline._schema_linkers[db_id]
-        
-        # Monkey patch only if using schema linking
-        if not no_schema_linking:
-            pipeline._get_schema_linker = bird_get_schema_linker
         
         runner = BirdEvaluationRunner(pipeline=pipeline, bird_dir=bird_dir)
         
