@@ -7,7 +7,7 @@ from app.evaluation.metrics import (
     exact_match,
     normalize_sql,
 )
-from app.evaluation.runner import (
+from app.evaluation.spider_runner import (
     EvaluationRunner,
     RunConfig,
     RunResult,

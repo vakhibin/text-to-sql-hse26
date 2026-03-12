@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Union
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.core.llm import create_llm, LLMClientError
+from app.core.logger import logger
 
 
 class SQLGeneratorError(Exception):
@@ -70,9 +71,11 @@ class SQLGenerator:
             messages = self._build_messages(prompt)
 
             response = await self._llm.ainvoke(messages)
-            response_text = response.content
+            response_text = self._get_response_content(response)
+            if isinstance(response_text, bytes):
+                response_text = response_text.decode("utf-8", errors="replace")
 
-            sql = self._extract_sql(response_text)
+            sql = self._extract_sql(response_text or "")
 
             reasoning = None
             if self.generation_mode == GenerationMode.COT:
@@ -146,9 +149,9 @@ class SQLGenerator:
     ) -> str:
         """Build prompt based on generation mode."""
         if self.generation_mode == GenerationMode.DIRECT:
-            return self._build_direct_prompt(question, schema, db_id)
+            return self._build_direct_prompt(question, schema, db_id, **kwargs)
         elif self.generation_mode == GenerationMode.COT:
-            return self._build_cot_prompt(question, schema, db_id)
+            return self._build_cot_prompt(question, schema, db_id, **kwargs)
         elif self.generation_mode == GenerationMode.FEW_SHOT:
             return self._build_few_shot_prompt(question, schema, db_id)
         else:
@@ -158,23 +161,29 @@ class SQLGenerator:
             self,
             question: str,
             schema: str,
-            db_id: Optional[str] = None
+            db_id: Optional[str] = None,
+            evidence: Optional[str] = None,
+            **kwargs
     ) -> str:
         """Direct prompt for SQL generation."""
         prompt = f"""Database Schema:
 {schema}
 
 Question: {question}"""
+        if evidence and evidence.strip():
+            prompt += f"\nEvidence/context: {evidence.strip()}"
         if db_id:
             prompt += f"\nDatabase: {db_id}"
-        prompt += "\n\nSQL Query:"
+        prompt += "\n\nReply with only the SQL query, starting with SELECT. No explanation.\n\nSQL:"
         return prompt
 
     def _build_cot_prompt(
             self,
             question: str,
             schema: str,
-            db_id: Optional[str] = None
+            db_id: Optional[str] = None,
+            evidence: Optional[str] = None,
+            **kwargs
     ) -> str:
         """Chain-of-Thought prompt."""
         prompt = f"""You are an SQL expert. Think step by step to generate the correct SQL query.
@@ -183,6 +192,8 @@ Database Schema:
 {schema}
 
 Question: {question}"""
+        if evidence and evidence.strip():
+            prompt += f"\nEvidence/context: {evidence.strip()}"
         if db_id:
             prompt += f"\nDatabase: {db_id}"
 
@@ -231,17 +242,60 @@ After your reasoning, output ONLY the SQL query."""
         messages.append(("user", prompt))
         return messages
 
-    def _extract_sql(self, response: str) -> str:
-        """Extract SQL from LLM response."""
-        response = response.strip()
+    def _get_response_content(self, response) -> str:
+        """Extract text from LLM response; fallback to response_metadata if content empty."""
+        if response is None:
+            return ""
+        text = getattr(response, "content", None) or getattr(response, "text", None)
+        if text and (isinstance(text, str) or isinstance(text, bytes)):
+            return text.decode("utf-8", errors="replace") if isinstance(text, bytes) else text
+        meta = getattr(response, "response_metadata", None) or {}
+        if isinstance(meta, dict):
+            raw = meta.get("raw_response") or meta.get("response_body")
+            if isinstance(raw, dict) and raw.get("choices"):
+                msg = raw["choices"][0].get("message", {})
+                if isinstance(msg, dict):
+                    c = msg.get("content") or msg.get("text")
+                    if c and isinstance(c, str):
+                        return c
+        kwargs = getattr(response, "additional_kwargs", None) or {}
+        if isinstance(kwargs, dict):
+            c = kwargs.get("content")
+            if c and isinstance(c, str):
+                return c
+        return ""
 
-        sql = re.sub(r'```sql\s*', '', response)
+    def _extract_sql(self, response: str) -> str:
+        """Extract SQL from LLM response. Keeps backticks for SQLite identifiers."""
+        raw = (response or "").strip()
+        if not raw:
+            return ";"
+
+        sql = re.sub(r'```sql\s*', '', raw)
         sql = re.sub(r'```\s*', '', sql)
-        sql = re.sub(r'`', '', sql)
         sql = ' '.join(sql.split())
 
         if not sql.endswith(';'):
             sql += ';'
+
+        # If extraction yielded only ";" or trivial, find SELECT in raw and take to last ;
+        if sql in (';', '') or (len(sql) < 25 and 'SELECT' not in sql.upper()):
+            sel_pos = raw.upper().find('SELECT')
+            if sel_pos >= 0:
+                tail = raw[sel_pos:]
+                # Take up to last semicolon (SQL often ends with ;)
+                last_semi = tail.rfind(';')
+                if last_semi >= 0:
+                    tail = tail[: last_semi + 1]
+                sql = ' '.join(tail.split())
+                if not sql.endswith(';'):
+                    sql += ';'
+            else:
+                logger.warning(
+                    "LLM response had no SELECT; len=%d preview=%s",
+                    len(raw),
+                    (raw[:400] + "..." if len(raw) > 400 else raw),
+                )
 
         return sql
 
@@ -330,8 +384,7 @@ async def main():
             system_prompt="You are an expert SQL assistant. Output only SQL."
         )
 
-        schema = \
-        """
+        spider_schema = """
         Table: airlines
         Columns: Abbreviation (TEXT), uid (NUMBER), Airline (TEXT), Country (TEXT)
         Primary keys: uid
@@ -342,23 +395,67 @@ async def main():
         Foreign keys: DestAirport -> airports.AirportCode, SourceAirport -> airports.AirportCode
         """
 
-        question = "Which airline has most number of flights?"
+        spider_question = "Which airline has most number of flights?"
 
         try:
-            result = await generator.agenerate_sql(
-                question=question,
-                schema=schema,
-                db_id="flight_2"
+            spider_result = await generator.agenerate_sql(
+                question=spider_question,
+                schema=spider_schema,
+                db_id="flight_2",
             )
 
+            print("\n=== Spider example ===")
             print("SQL generated successfully!")
-            print(f"SQL: {result.sql}")
-            print(f"Reasoning: {result.reasoning[:100]}..." if result.reasoning else "No reasoning")
-            print(f"Confidence: {result.confidence}")
-            print(f"Generation time: {result.generation_time:.2f}s")
+            print(f"SQL: {spider_result.sql}")
+            print(
+                f"Reasoning: {spider_result.reasoning[:100]}..."
+                if spider_result.reasoning
+                else "No reasoning"
+            )
+            print(f"Confidence: {spider_result.confidence}")
+            print(f"Generation time: {spider_result.generation_time:.2f}s")
 
         except SQLGeneratorError as e:
-            print(f"Error: {e}")
+            print(f"Spider example error: {e}")
+
+        # BIRD example (uses backticks and evidence/context)
+        bird_schema = """
+        CREATE TABLE frpm (
+          `County Name` TEXT,
+          `Enrollment (K-12)` REAL,
+          `Free Meal Count (K-12)` REAL
+        );
+        """
+
+        bird_question = (
+            "What is the highest eligible free rate for K-12 students in the schools "
+            "in Alameda County?"
+        )
+        bird_evidence = (
+            "Eligible free rate for K-12 = `Free Meal Count (K-12)` / `Enrollment (K-12)`"
+        )
+
+        try:
+            bird_result = await generator.agenerate_sql(
+                question=bird_question,
+                schema=bird_schema,
+                db_id="california_schools",
+                evidence=bird_evidence,
+            )
+
+            print("\n=== BIRD example ===")
+            print("SQL generated successfully!")
+            print(f"SQL: {bird_result.sql}")
+            print(
+                f"Reasoning: {bird_result.reasoning[:100]}..."
+                if bird_result.reasoning
+                else "No reasoning"
+            )
+            print(f"Confidence: {bird_result.confidence}")
+            print(f"Generation time: {bird_result.generation_time:.2f}s")
+
+        except SQLGeneratorError as e:
+            print(f"BIRD example error: {e}")
 
 
 if __name__ == "__main__":

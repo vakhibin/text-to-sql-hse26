@@ -6,7 +6,7 @@ import pathlib
 
 from dataclasses import dataclass
 from typing import List, AsyncIterator
-from app.data.spider_v1.downloader import DatasetDownloader
+from app.data.downloaders.spider_downloader import DatasetDownloader
 
 KAGGLE_DATASET_URL = "jeromeblanchet/yale-universitys-spider-10-nlp-dataset"
 DEFAULT_DOWNLOAD_PATH = pathlib.Path("./databases/spider")

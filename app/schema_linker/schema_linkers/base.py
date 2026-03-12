@@ -272,10 +272,10 @@ class BaseSchemaLinker(ABC):
         if evidence:
             query_text = f"{question} {evidence}"
 
-        # Build schema element texts/ids exactly like in link()
+        # Build schema element texts/ids (format must match ChromaSchemaStore.add_schema)
         table_ids = [f"{db_id}_table_{t.name}" for t in tables]
         column_ids: List[str] = []
-        column_info = []  # (table_name, column_name)
+        column_info = [] 
         for table in tables:
             for col in table.columns:
                 column_ids.append(f"{db_id}_column_{table.name}_{col}")

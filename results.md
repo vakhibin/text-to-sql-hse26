@@ -118,7 +118,7 @@ cp .env.example .env
 uv sync
 
 # 3. Загрузка датасета Spider
-uv run python -m app.data.spider_v1
+uv run python -m app.data.dataloaders
 
 # 4. Запуск оценки
 uv run python -m app.evaluation.runner --split dev

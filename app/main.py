@@ -1,6 +1,6 @@
 # import click
 # from core.logger import logger
-# from data.spider_v1 import DatasetDownloader
+# from data.dataloaders import DatasetDownloader
 # from sql_generator.sql_generator import SQLGenerator
 # from schema_linker.schema_linker import SchemaLinker
 #

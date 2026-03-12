@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 import fire
-from app.evaluation.runner import run_evaluation
+from app.evaluation.spider_runner import run_evaluation
 
 
 class EvaluationCLI:

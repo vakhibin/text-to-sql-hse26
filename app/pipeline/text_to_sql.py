@@ -11,6 +11,7 @@ from app.core.db import SQLiteDatabase
 from app.schema_linker import SpiderSchemaLinker, LinkedSchema
 from app.sql_generator.sql_generator import SQLGenerator, SQLGenerationResult, GenerationMode
 from app.core.llm import NoTokenProvidedError
+from app.core.logger import logger
 
 @dataclass
 class PipelineResult:
@@ -48,7 +49,8 @@ class TextToSQLPipeline:
         llm: BaseChatModel,
         embeddings: Optional[Embeddings] = None,
         vector_store: Optional['ChromaSchemaStore'] = None,
-        spider_dir: str | Path = "databases/spider",
+        dataset_dir: str | Path = "databases/spider",
+        dataset_type: str = "spider",
         generation_mode: GenerationMode = GenerationMode.DIRECT,
         system_prompt: Optional[str] = None,
         use_schema_linking: bool = True,
@@ -70,7 +72,8 @@ class TextToSQLPipeline:
         """
         self._llm = llm
         self._embeddings = embeddings
-        self._spider_dir = Path(spider_dir)
+        self._dataset_dir = Path(dataset_dir)
+        self._dataset_type = dataset_type.lower()
         self._use_schema_linking = use_schema_linking and embeddings is not None
         self._top_k_tables = top_k_tables
         self._top_k_columns = top_k_columns
@@ -83,7 +86,7 @@ class TextToSQLPipeline:
         )
 
         # Cache for schema linkers (one per db_id)
-        self._schema_linkers: Dict[str, SpiderSchemaLinker] = {}
+        self._schema_linkers: Dict[str, Any] = {} 
         self._linker_lock = asyncio.Lock()
         self._vector_store = vector_store
 
@@ -93,11 +96,12 @@ class TextToSQLPipeline:
 RULES:
 1. Output ONLY valid SQL code - no explanations, no markdown, no extra text
 2. Use proper SQL syntax compatible with SQLite
-3. Extract and use specific values from the question (numbers, names, dates, etc.)
-4. Handle NULL values appropriately with IS NULL/IS NOT NULL
-5. Use explicit JOIN syntax (INNER JOIN, LEFT JOIN) with ON clauses
-6. Include all necessary WHERE conditions based on the question
-7. End each statement with a semicolon
+3. Quote column/table names that contain spaces or special characters with backticks (e.g. `Column Name`)
+4. Extract and use specific values from the question (numbers, names, dates, etc.)
+5. Handle NULL values appropriately with IS NULL/IS NOT NULL
+6. Use explicit JOIN syntax (INNER JOIN, LEFT JOIN) with ON clauses
+7. Include all necessary WHERE conditions based on the question
+8. End each statement with a semicolon
 
 CRITICAL: Never include any reasoning, commentary, or explanations in your output. Only SQL code."""
 
@@ -106,16 +110,35 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
         if db_id not in self._schema_linkers:
             async with self._linker_lock:
                 if db_id not in self._schema_linkers:
-                    self._schema_linkers[db_id] = await SpiderSchemaLinker.from_spider_dir(
-                        spider_dir=self._spider_dir,
-                        db_id=db_id,
-                        embeddings=self._embeddings if self._use_schema_linking else None,
-                    )
+                    if self._dataset_type == "spider":
+                        from app.schema_linker.schema_linkers.spider import SpiderSchemaLinker
+                        self._schema_linkers[db_id] = await SpiderSchemaLinker.from_spider_dir(
+                            spider_dir=self._dataset_dir,
+                            db_id=db_id,
+                            embeddings=self._embeddings if self._use_schema_linking else None,
+                        )
+                    else:  # bird
+                        from app.schema_linker.schema_linkers.bird import BirdSchemaLinker
+                        # Для BIRD нужно знать split, возьмем из атрибута или передадим
+                        split = getattr(self, "_bird_split", "dev")
+                        self._schema_linkers[db_id] = await BirdSchemaLinker.from_bird_dir(
+                            bird_dir=self._dataset_dir,
+                            db_id=db_id,
+                            split=split,
+                            embeddings=self._embeddings if self._use_schema_linking else None,
+                        )
+
+
         return self._schema_linkers[db_id]
 
     def _get_db_path(self, db_id: str) -> Path:
         """Get path to SQLite database."""
-        return self._spider_dir / "database" / db_id / f"{db_id}.sqlite"
+        if self._dataset_type == "spider":
+            return self._dataset_dir / "database" / db_id / f"{db_id}.sqlite"
+        else:  # bird
+            # Для BIRD нужно знать split
+            split = getattr(self, "_bird_split", "dev")
+            return self._dataset_dir / f"{split}_databases" / db_id / f"{db_id}.sqlite"
 
     async def run(
         self,
@@ -168,19 +191,33 @@ CRITICAL: Never include any reasoning, commentary, or explanations in your outpu
         result.linked_schema = linked_schema
         result.schema_linking_time = time.time() - schema_start
 
-        # Step 2: SQL generation
+        # Step 2: SQL generation (never pass empty schema)
         gen_start = time.time()
+        if not linked_schema.tables:
+            full_schema = await schema_linker.get_full_schema()
+            linked_schema = LinkedSchema(tables=full_schema)
+            result.linked_schema = linked_schema
         schema_str = linked_schema.to_create_table_string()
 
         generation_result = await self._sql_generator.agenerate_sql(
             question=question,
             schema=schema_str,
             db_id=db_id,
+            evidence=evidence,
         )
 
         result.predicted_sql = generation_result.sql
         result.generation_result = generation_result
         result.generation_time = time.time() - gen_start
+
+        if (result.predicted_sql or "").strip() in ("", ";"):
+            logger.warning(
+                "Empty or trivial SQL for db_id=%s; schema_len=%d; raw_response_len=%d; raw_preview=%s",
+                db_id,
+                len(schema_str),
+                len(generation_result.raw_response or ""),
+                (generation_result.raw_response or "")[:600],
+            )
 
         # Step 3: Execution (optional)
         if execute:
@@ -267,36 +304,75 @@ async def main():
         model=settings.embedding_model,
     )
 
-    vector_store = ChromaSchemaStore(
+    vector_store_spider = ChromaSchemaStore(
         embeddings=embeddings,
         collection_name="spider_schemas",
-        persist_directory="./chroma_db"
+        persist_directory="./chroma_db",
     )
-    await vector_store.initialize()
+    await vector_store_spider.initialize()
+
+    vector_store_bird = ChromaSchemaStore(
+        embeddings=embeddings,
+        collection_name="bird_schemas",
+        persist_directory="./chroma_db",
+    )
+    await vector_store_bird.initialize()
 
     # Create pipeline
-    pipeline = TextToSQLPipeline(
+    pipeline_spider = TextToSQLPipeline(
         llm=llm,
         embeddings=embeddings,
-        vector_store=vector_store,
-        spider_dir="databases/spider",
+        vector_store=vector_store_spider,
+        dataset_dir="databases/spider",
+        dataset_type="spider",
+        generation_mode=GenerationMode.DIRECT,
+        use_schema_linking=True,
+        top_k_tables=5,
+    )
+    llm_bird = await create_llm(
+        provider=settings.llm_provider,
+        model=settings.llm_model,
+        api_key=settings.openrouter_api_key,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+    )
+    pipeline_bird = TextToSQLPipeline(
+        llm=llm_bird,
+        embeddings=embeddings,
+        vector_store=vector_store_bird,
+        dataset_dir="databases/bird",
+        dataset_type="bird",
         generation_mode=GenerationMode.DIRECT,
         use_schema_linking=True,
         top_k_tables=5,
     )
 
-    # Run example
-    result = await pipeline.run(
+    # Run BIRD first so its LLM call is not "second" (avoids empty response from reuse)
+    result_bird = await pipeline_bird.run(
+        question="What is the highest eligible free rate for K-12 students in the schools in Alameda County?",
+        db_id="california_schools",
+        gold_sql="SELECT `Free Meal Count (K-12)` / `Enrollment (K-12)` FROM frpm WHERE `County Name` = 'Alameda' ORDER BY (CAST(`Free Meal Count (K-12)` AS REAL) / `Enrollment (K-12)`) DESC LIMIT 1",
+        evidence="Eligible free rate for K-12 = `Free Meal Count (K-12)` / `Enrollment (K-12)`",
+        execute=True,
+    )
+    result_spider = await pipeline_spider.run(
         question="How many singers do we have?",
         db_id="concert_singer",
         gold_sql="SELECT count(*) FROM singer",
         execute=True,
     )
-    print(f"Question: {result.question}")
-    print(f"Predicted SQL: {result.predicted_sql}")
-    print(f"Gold SQL: {result.gold_sql}")
-    print(f"Execution match: {result.execution_match}")
-    print(f"Total time: {result.total_time:.2f}s")
+
+    print(f"Question bird: {result_bird.question}")
+    print(f"Predicted SQL bird: {result_bird.predicted_sql}")
+    print(f"Gold SQL bird: {result_bird.gold_sql}")
+    print(f"Execution match bird: {result_bird.execution_match}")
+    print(f"Total time bird: {result_bird.total_time:.2f}s")
+
+    print(f"Question spider: {result_spider.question}")
+    print(f"Predicted SQL spider: {result_spider.predicted_sql}")
+    print(f"Gold SQL spider: {result_spider.gold_sql}")
+    print(f"Execution match spider: {result_spider.execution_match}")
+    print(f"Total time spider: {result_spider.total_time:.2f}s")
 
 
 if __name__ == "__main__":

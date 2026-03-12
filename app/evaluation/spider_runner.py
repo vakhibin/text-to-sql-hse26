@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 
 from tqdm.asyncio import tqdm
 
-from app.data.spider_v1.dataloaders import SpiderDataLoader, SpiderExample
+from app.data.dataloaders.spider_dataloader import SpiderDataLoader, SpiderExample
 from app.pipeline import TextToSQLPipeline
 from app.evaluation.metrics import evaluate_dataset,  DatasetEvaluationResult
 from app.core.logger import logger

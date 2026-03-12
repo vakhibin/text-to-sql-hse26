@@ -74,8 +74,9 @@ class ChromaSchemaStore:
                 ))
                 ids.append(table_id)
 
-            # Add columns
-            for col in table.columns:
+            # Column ID format must match base.link_with_vector_store (no col_idx;
+            # re-add col_idx only if you re-populate all collections)
+            for col_idx, col in enumerate(table.columns):
                 col_id = f"{db_id}_column_{table.name}_{col}"
                 if not check_existing or col_id not in existing_ids:
                     col_text = f"column {col} in table {table.name}"
@@ -86,7 +87,8 @@ class ChromaSchemaStore:
                             "type": "column",
                             "table_name": table.name,
                             "column_name": col,
-                            "column_type": table.column_types.get(col, "UNKNOWN")
+                            "column_type": table.column_types.get(col, "UNKNOWN"),
+                            "column_index": col_idx
                         }
                     ))
                     ids.append(col_id)
