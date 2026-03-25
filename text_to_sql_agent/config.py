@@ -25,6 +25,7 @@ class AgentSettings(BaseSettings):
 
     # Data and retrieval paths
     spider_root: str = "databases/spider"
+    bird_root: str = "databases/bird"
     chroma_persist_directory: str = ".cache/chroma"
     chroma_collection_selector: str = "schema_selector"
 
@@ -59,6 +60,9 @@ class AgentSettings(BaseSettings):
 
     # Execution filter defaults
     execution_timeout_seconds: int = 20
+
+    # OpenAI-compatible HTTP API (DBeaver)
+    api_token: str | None = Field(default=None, alias="API_TOKEN")
 
 
 settings = AgentSettings()

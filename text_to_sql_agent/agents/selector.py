@@ -95,7 +95,9 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
     try:
         question = state["question"]
         db_id = state["db_id"]
-        schema = await load_schema(db_id)
+        root = state.get("schema_root") or settings.spider_root
+        layout = state.get("schema_layout") or "spider"
+        schema = await load_schema(db_id, spider_root=root, layout=layout)
 
         vector_store = _get_vector_store()
         await vector_store.index_schema(db_id=db_id, schema=schema)

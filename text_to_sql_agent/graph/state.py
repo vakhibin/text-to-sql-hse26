@@ -8,6 +8,7 @@ from uuid import uuid4
 StageName = Literal["selector", "decomposer", "generator", "execution_filter", "judge", "refiner"]
 StageRunStatus = Literal["pending", "running", "success", "failed", "skipped"]
 ComplexityLevel = Literal["simple", "moderate", "complex", "unknown"]
+SchemaLayout = Literal["spider", "bird"]
 
 
 class SQLAgentState(TypedDict):
@@ -17,6 +18,8 @@ class SQLAgentState(TypedDict):
     question: str
     db_id: str
     evidence: Optional[str]
+    schema_root: Optional[str]
+    schema_layout: SchemaLayout
 
     # Selector
     full_schema: dict
@@ -112,12 +115,16 @@ def make_initial_state(
     db_id: str,
     evidence: Optional[str] = None,
     trace_id: Optional[str] = None,
+    schema_root: Optional[str] = None,
+    schema_layout: SchemaLayout = "spider",
 ) -> SQLAgentState:
     """Build deterministic initial state for graph invocation."""
     return {
         "question": question,
         "db_id": db_id,
         "evidence": evidence,
+        "schema_root": schema_root,
+        "schema_layout": schema_layout,
         "full_schema": {},
         "filtered_schema": "",
         "complexity": "unknown",
