@@ -66,6 +66,8 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
         }
 
     validation = validate_sql_schema_references(current_sql, state.get("full_schema", {}))
+    if validation.warnings:
+        warnings.append(validation.warning_message())
     if not validation.is_valid:
         execution = None
         warnings.append(validation.error_message())

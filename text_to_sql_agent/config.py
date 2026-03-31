@@ -29,6 +29,7 @@ class AgentSettings(BaseSettings):
     bird_mini_root: str = "databases/bird_mini"
     chroma_persist_directory: str = ".cache/chroma"
     chroma_collection_selector: str = "schema_selector"
+    chroma_collection_few_shot: str = "few_shot_examples"
 
     # Ensemble defaults
     num_candidates: int = 8
@@ -41,12 +42,17 @@ class AgentSettings(BaseSettings):
     few_shot_examples_per_candidate: int = 2
     few_shot_max_pool_size: int = 3000
     few_shot_seed: int = 42
+    few_shot_semantic_retrieval: bool = True
+    few_shot_retrieval_top_k: int = 10
+    few_shot_same_db_top_k: int = 6
+    few_shot_retrieval_window: int = 6
 
     # Selector defaults
     selector_top_k_tables: int = 15
     selector_target_tables_min: int = 3
     selector_target_tables_max: int = 5
     selector_debug: bool = False
+    selector_top_k_lexical_tables: int = 8
 
     # LLM generation defaults
     llm_temperature_primary: float = 0.2

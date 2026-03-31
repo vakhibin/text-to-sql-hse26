@@ -12,8 +12,9 @@ def build_selector_rerank_prompt(question: str, candidates: list[dict]) -> str:
     candidates_lines = []
     for idx, candidate in enumerate(candidates, start=1):
         score = float(candidate.get("score", 0.0))
+        source = str(candidate.get("source", "vector")).strip()
         candidates_lines.append(
-            f"{idx}. table={candidate.get('table_name')} score={score:.4f}"
+            f"{idx}. table={candidate.get('table_name')} score={score:.4f} source={source}"
         )
     return f"""
 You are a database schema reranker.

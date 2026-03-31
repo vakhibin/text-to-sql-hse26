@@ -41,6 +41,105 @@ def _build_retrieved_schema_context(schema: dict[str, Any], candidate_names: lis
     return _filter_schema_tables(schema, names)
 
 
+def _identifier_tokens(text: str) -> set[str]:
+    tokens = {token for token in re.split(r"[^a-zA-Z0-9]+", text.lower()) if token}
+    expanded = set(tokens)
+    for token in list(tokens):
+        if token.endswith("ies") and len(token) > 4:
+            expanded.add(token[:-3] + "y")
+        elif token.endswith("s") and len(token) > 3:
+            expanded.add(token[:-1])
+    return expanded
+
+
+def _table_lexical_score(question_tokens: set[str], question_text: str, table: dict[str, Any]) -> float:
+    table_name = str(table.get("name", "")).strip()
+    if not table_name:
+        return 0.0
+    table_tokens = _identifier_tokens(table_name)
+    column_tokens: set[str] = set()
+    for column in table.get("columns", []):
+        column_tokens.update(_identifier_tokens(str(column.get("name", ""))))
+
+    flat_table_name = " ".join(token for token in re.split(r"[^a-zA-Z0-9]+", table_name.lower()) if token)
+    table_overlap = len(table_tokens & question_tokens)
+    column_overlap = len(column_tokens & question_tokens)
+    score = 0.0
+    if flat_table_name and flat_table_name in question_text:
+        score += 3.0
+    score += table_overlap * 2.0
+    score += min(4.0, float(column_overlap))
+    return score
+
+
+def _build_lexical_candidates(schema: dict[str, Any], question: str, top_k: int) -> list[dict[str, Any]]:
+    question_tokens = _identifier_tokens(question)
+    question_text = " ".join(token for token in re.split(r"[^a-zA-Z0-9]+", question.lower()) if token)
+    scored: list[tuple[float, str]] = []
+    for table in schema.get("tables", []):
+        table_name = str(table.get("name", "")).strip()
+        if not table_name:
+            continue
+        raw_score = _table_lexical_score(question_tokens, question_text, table)
+        if raw_score <= 0:
+            continue
+        scored.append((raw_score, table_name))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    lexical_candidates = []
+    for raw_score, table_name in scored[:top_k]:
+        lexical_candidates.append(
+            {
+                "table_name": table_name,
+                "db_id": schema.get("db_id", ""),
+                "score": round(min(1.1, 0.55 + (raw_score / 8.0)), 4),
+                "content": f"table={table_name}",
+                "source": "lexical",
+            }
+        )
+    return lexical_candidates
+
+
+def _merge_candidates(
+    vector_candidates: list[dict[str, Any]],
+    lexical_candidates: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    source_rank = {"hybrid": 2, "lexical": 1, "vector": 0}
+
+    for candidate in vector_candidates:
+        table_name = str(candidate.get("table_name", "")).strip()
+        if not table_name:
+            continue
+        merged[table_name] = {
+            **candidate,
+            "table_name": table_name,
+            "source": "vector",
+        }
+
+    for candidate in lexical_candidates:
+        table_name = str(candidate.get("table_name", "")).strip()
+        if not table_name:
+            continue
+        existing = merged.get(table_name)
+        if existing is None:
+            merged[table_name] = candidate
+            continue
+        existing["score"] = round(max(float(existing.get("score", 0.0)), float(candidate.get("score", 0.0))), 4)
+        existing["source"] = "hybrid"
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: (
+            -float(item.get("score", 0.0)),
+            -source_rank.get(str(item.get("source", "")), 0),
+            str(item.get("table_name", "")),
+        ),
+    )
+    return ordered[:limit]
+
+
 def _safe_parse_selected_tables(response_text: str) -> list[str]:
     text = (response_text or "").strip()
 
@@ -109,12 +208,23 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
 
         vector_store = _get_vector_store()
         await vector_store.index_schema(db_id=db_id, schema=schema)
-        candidates = await vector_store.query_tables(
+        vector_candidates = await vector_store.query_tables(
             query=question,
             db_id=db_id,
             top_k=settings.selector_top_k_tables,
         )
+        lexical_candidates = _build_lexical_candidates(
+            schema,
+            question,
+            top_k=settings.selector_top_k_lexical_tables,
+        )
+        candidates = _merge_candidates(
+            vector_candidates=vector_candidates,
+            lexical_candidates=lexical_candidates,
+            limit=settings.selector_top_k_tables,
+        )
         _debug(f"db_id={db_id} question={question!r}")
+        _debug(f"vector_candidates={len(vector_candidates)} lexical_candidates={len(lexical_candidates)}")
         _debug(f"retrieved_candidates={len(candidates)}")
 
         selected_tables: list[str] = []

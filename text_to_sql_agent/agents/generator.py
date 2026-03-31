@@ -10,7 +10,7 @@ from typing import Sequence
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.generator import build_generator_prompt
-from text_to_sql_agent.tools.few_shot import load_few_shot_pool, sample_examples_for_candidate
+from text_to_sql_agent.tools.few_shot import load_few_shot_pool, retrieve_examples_for_candidate
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
 
 
@@ -56,8 +56,9 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
 
         async def _run_one(idx: int) -> tuple[str, dict[str, object]]:
             role = roles[idx % len(roles)]
-            examples = sample_examples_for_candidate(
+            examples = await retrieve_examples_for_candidate(
                 pool=pool,
+                question=state["question"],
                 candidate_index=idx,
                 k=settings.few_shot_examples_per_candidate,
                 seed=settings.few_shot_seed,

@@ -14,14 +14,28 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 class SQLSchemaValidationResult:
     """Validation result for table/column references against loaded schema."""
 
-    is_valid: bool
-    errors: list[str]
+    blocking_errors: list[str]
+    warnings: list[str]
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.blocking_errors
+
+    @property
+    def errors(self) -> list[str]:
+        return self.blocking_errors
 
     def error_message(self) -> str:
-        if not self.errors:
+        if not self.blocking_errors:
             return ""
-        unique_errors = list(dict.fromkeys(self.errors))
+        unique_errors = list(dict.fromkeys(self.blocking_errors))
         return "schema_validation: " + "; ".join(unique_errors)
+
+    def warning_message(self) -> str:
+        if not self.warnings:
+            return ""
+        unique_warnings = list(dict.fromkeys(self.warnings))
+        return "schema_validation_warning: " + "; ".join(unique_warnings)
 
 
 def _schema_columns_by_table(schema: dict[str, Any]) -> dict[str, set[str]]:
@@ -84,16 +98,17 @@ def validate_sql_schema_references(
     """Validate referenced tables and columns against loaded schema."""
     schema_columns_by_table = _schema_columns_by_table(schema)
     if not sql.strip() or not schema_columns_by_table:
-        return SQLSchemaValidationResult(is_valid=True, errors=[])
+        return SQLSchemaValidationResult(blocking_errors=[], warnings=[])
 
     try:
         expression = parse_one(sql, read="sqlite")
     except ParseError as exc:
-        return SQLSchemaValidationResult(is_valid=False, errors=[f"parse error: {exc}"])
+        return SQLSchemaValidationResult(blocking_errors=[f"parse error: {exc}"], warnings=[])
     except Exception as exc:
-        return SQLSchemaValidationResult(is_valid=False, errors=[f"unexpected parse error: {exc}"])
+        return SQLSchemaValidationResult(blocking_errors=[f"unexpected parse error: {exc}"], warnings=[])
 
-    errors: list[str] = []
+    blocking_errors: list[str] = []
+    warnings: list[str] = []
     for scope in traverse_scope(expression):
         available_sources: dict[str, set[str]] = {}
         projected_aliases = _explicit_projection_aliases(scope)
@@ -101,7 +116,7 @@ def validate_sql_schema_references(
         for alias, source in scope.sources.items():
             source_name, source_columns = _source_columns(source, schema_columns_by_table)
             if source_name and source_name != "derived" and source_name not in schema_columns_by_table:
-                errors.append(f"unknown table '{source_name}'")
+                blocking_errors.append(f"unknown table '{source_name}'")
                 continue
             available_sources[str(alias)] = source_columns
 
@@ -114,9 +129,9 @@ def validate_sql_schema_references(
             if qualifier:
                 known_columns = available_sources.get(qualifier)
                 if known_columns is None:
-                    errors.append(f"unknown table or alias '{qualifier}' for column '{column_name}'")
+                    blocking_errors.append(f"unknown table or alias '{qualifier}' for column '{column_name}'")
                 elif column_name not in known_columns:
-                    errors.append(f"unknown column '{qualifier}.{column_name}'")
+                    blocking_errors.append(f"unknown column '{qualifier}.{column_name}'")
                 continue
 
             if column_name in projected_aliases:
@@ -126,9 +141,13 @@ def validate_sql_schema_references(
                 alias for alias, source_columns in available_sources.items() if column_name in source_columns
             ]
             if not matching_sources:
-                errors.append(f"unknown column '{column_name}'")
+                warnings.append(f"unknown unqualified column '{column_name}'")
             elif len(matching_sources) > 1:
-                errors.append(f"ambiguous column '{column_name}'")
+                warnings.append(f"ambiguous column '{column_name}'")
 
-    unique_errors = list(dict.fromkeys(errors))
-    return SQLSchemaValidationResult(is_valid=not unique_errors, errors=unique_errors)
+    unique_blocking_errors = list(dict.fromkeys(blocking_errors))
+    unique_warnings = list(dict.fromkeys(warnings))
+    return SQLSchemaValidationResult(
+        blocking_errors=unique_blocking_errors,
+        warnings=unique_warnings,
+    )
