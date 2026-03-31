@@ -12,7 +12,7 @@ from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.selector import build_selector_rerank_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
-from text_to_sql_agent.tools.schema_loader import load_schema, to_mschema
+from text_to_sql_agent.tools.schema_loader import load_schema, schema_to_mschema
 from text_to_sql_agent.tools.vector_store import build_vector_store
 
 
@@ -90,12 +90,15 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
     stage_status = dict(state.get("stage_status", {}))
     stage_timings = dict(state.get("stage_timings", {}))
     warnings = list(state.get("warnings", []))
+    llm_usage = list(state.get("llm_usage", []))
+    total_cost_usd = float(state.get("total_cost_usd", 0.0))
     stage_status["selector"] = "running"
 
     try:
         question = state["question"]
         db_id = state["db_id"]
-        schema = await load_schema(db_id)
+        schema_root = state.get("schema_root")
+        schema = await load_schema(db_id, spider_root=schema_root)
 
         vector_store = _get_vector_store()
         await vector_store.index_schema(db_id=db_id, schema=schema)
@@ -112,11 +115,17 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
             _debug(f"candidate_names={[c.get('table_name') for c in candidates]}")
             prompt = build_selector_rerank_prompt(question=question, candidates=candidates)
             router = LLMRouter()
-            response_text = await router.ainvoke(
+            response = await router.ainvoke_with_metadata(
                 role=ModelRole.GENERATOR_PRIMARY,
                 messages=[("system", "Return strict JSON only."), ("user", prompt)],
                 temperature_override=0.0,
+                trace_id=state.get("trace_id"),
+                db_id=db_id,
+                stage="selector",
             )
+            response_text = response.text
+            llm_usage.append(response.usage)
+            total_cost_usd += float(response.usage.get("cost_usd", 0.0))
             _debug(f"reranker_raw_response={response_text!r}")
             selected_tables = _safe_parse_selected_tables(response_text)
             _debug(f"parsed_selected_tables={selected_tables}")
@@ -150,15 +159,16 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         return {
             **state,
             "full_schema": schema,
-            "filtered_schema": to_mschema(filtered_schema),
+            "filtered_schema": schema_to_mschema(filtered_schema, schema_root=schema_root),
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,
                 "selector": round(time.perf_counter() - started, 4),
             },
             "warnings": warnings,
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
-
     except Exception as exc:
         stage_status["selector"] = "failed"
         return {
@@ -170,5 +180,19 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
                 "selector": round(time.perf_counter() - started, 4),
             },
             "warnings": [*warnings, f"selector_error: {exc}"],
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
+
+
+async def prewarm_selector_cache(
+    db_ids: list[str],
+    *,
+    schema_root: str | None = None,
+) -> None:
+    """Warm schema cache and Chroma index for benchmark runs."""
+    vector_store = _get_vector_store()
+    for db_id in dict.fromkeys(db_ids):
+        schema = await load_schema(db_id, spider_root=schema_root)
+        await vector_store.index_schema(db_id=db_id, schema=schema)
 

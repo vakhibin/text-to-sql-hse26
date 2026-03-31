@@ -28,6 +28,8 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
     stage_status = dict(state.get("stage_status", {}))
     stage_timings = dict(state.get("stage_timings", {}))
     warnings = list(state.get("warnings", []))
+    llm_usage = list(state.get("llm_usage", []))
+    total_cost_usd = float(state.get("total_cost_usd", 0.0))
     stage_status["refiner"] = "running"
 
     db_path = str(state.get("full_schema", {}).get("db_path", "")).strip()
@@ -42,6 +44,8 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
                 "refiner": round(time.perf_counter() - started, 4),
             },
             "warnings": [*warnings, "refiner: db_path missing"],
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
 
     current_sql = state.get("final_sql") or state.get("best_sql", "")
@@ -56,6 +60,8 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
                 "refiner": round(time.perf_counter() - started, 4),
             },
             "warnings": [*warnings, "refiner: empty SQL input"],
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
 
     execution = await execute_sql(
@@ -76,6 +82,8 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
                 "refiner": round(time.perf_counter() - started, 4),
             },
             "warnings": warnings,
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
 
     # Execution failed: prepare one refinement step.
@@ -91,12 +99,17 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             execution_error=execution_error,
         )
         router = LLMRouter()
-        fixed = await router.ainvoke(
+        response = await router.ainvoke_with_metadata(
             role=ModelRole.REFINER,
             messages=[("system", "Return only corrected SQL."), ("user", prompt)],
             temperature_override=0.0,
+            trace_id=state.get("trace_id"),
+            db_id=state.get("db_id"),
+            stage="refiner",
         )
-        parsed = _extract_sql(fixed)
+        llm_usage.append(response.usage)
+        total_cost_usd += float(response.usage.get("cost_usd", 0.0))
+        parsed = _extract_sql(response.text)
         if parsed:
             next_sql = parsed
         else:
@@ -117,5 +130,7 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             "refiner": round(time.perf_counter() - started, 4),
         },
         "warnings": warnings,
+        "llm_usage": llm_usage,
+        "total_cost_usd": total_cost_usd,
     }
 

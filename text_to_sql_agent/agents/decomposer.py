@@ -55,6 +55,8 @@ async def run_decomposer(state: SQLAgentState) -> SQLAgentState:
     stage_status = dict(state.get("stage_status", {}))
     stage_timings = dict(state.get("stage_timings", {}))
     warnings = list(state.get("warnings", []))
+    llm_usage = list(state.get("llm_usage", []))
+    total_cost_usd = float(state.get("total_cost_usd", 0.0))
     stage_status["decomposer"] = "running"
 
     try:
@@ -63,14 +65,20 @@ async def run_decomposer(state: SQLAgentState) -> SQLAgentState:
             evidence=state.get("evidence"),
         )
         router = LLMRouter()
-        response_text = await router.ainvoke(
+        response = await router.ainvoke_with_metadata(
             role=ModelRole.GENERATOR_PRIMARY,
             messages=[
                 ("system", "Return strict JSON only."),
                 ("user", prompt),
             ],
             temperature_override=0.0,
+            trace_id=state.get("trace_id"),
+            db_id=state.get("db_id"),
+            stage="decomposer",
         )
+        response_text = response.text
+        llm_usage.append(response.usage)
+        total_cost_usd += float(response.usage.get("cost_usd", 0.0))
 
         complexity, sub_questions, parse_warning = _parse_decomposition(response_text)
         if parse_warning:
@@ -87,6 +95,8 @@ async def run_decomposer(state: SQLAgentState) -> SQLAgentState:
                 "decomposer": round(time.perf_counter() - started, 4),
             },
             "warnings": warnings,
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
     except Exception as exc:
         stage_status["decomposer"] = "failed"
@@ -101,5 +111,7 @@ async def run_decomposer(state: SQLAgentState) -> SQLAgentState:
                 "decomposer": round(time.perf_counter() - started, 4),
             },
             "warnings": [*warnings, f"decomposer_error: {exc}"],
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
 

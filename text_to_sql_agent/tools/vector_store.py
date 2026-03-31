@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,21 @@ def _table_to_document(db_id: str, table: dict[str, Any]) -> Document:
     )
 
 
+def _embedding_namespace(model_name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", model_name).strip("_").lower()[:48] or "embedding"
+    digest = hashlib.sha1(model_name.encode("utf-8")).hexdigest()[:8]
+    return f"{slug}_{digest}"
+
+
+def _tiktoken_model_name(model_name: str) -> str:
+    """Map OpenRouter-style embedding ids to tokenizer-compatible OpenAI ids."""
+    if "/" in model_name:
+        provider, remainder = model_name.split("/", 1)
+        if provider in {"openai", "text-embedding"}:
+            return remainder
+    return model_name
+
+
 class VectorStoreClient:
     """Schema index/retrieval client backed by Chroma."""
 
@@ -43,17 +60,20 @@ class VectorStoreClient:
         collection_name: str,
         persist_directory: str | Path = ".cache/chroma",
     ):
-        self.collection_name = collection_name
+        self.collection_name = f"{collection_name}__{_embedding_namespace(settings.embeddings_model)}"
         self.persist_directory = str(persist_directory)
-        self._indexed_db_ids: set[str] = set()
+        self._namespace_key = (self.persist_directory, self.collection_name, settings.embeddings_model)
+        self._indexed_db_ids: set[tuple[str, str, str, str]] = set()
         self._index_lock = asyncio.Lock()
         if not settings.openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required for vector embeddings")
         self._vector_store = Chroma(
-            collection_name=collection_name,
+            collection_name=self.collection_name,
             persist_directory=self.persist_directory,
             embedding_function=OpenAIEmbeddings(
                 model=settings.embeddings_model,
+                tiktoken_model_name=_tiktoken_model_name(settings.embeddings_model),
+                check_embedding_ctx_length=False,
                 api_key=settings.openrouter_api_key,
                 base_url=settings.openrouter_base_url,
             ),
@@ -73,13 +93,14 @@ class VectorStoreClient:
 
     async def index_schema(self, db_id: str, schema: dict[str, Any]) -> None:
         """Index table-level documents for a specific database schema."""
-        if db_id in self._indexed_db_ids:
+        index_key = (*self._namespace_key, db_id)
+        if index_key in self._indexed_db_ids:
             return
         async with self._index_lock:
-            if db_id in self._indexed_db_ids:
+            if index_key in self._indexed_db_ids:
                 return
             await asyncio.to_thread(self._index_schema_sync, db_id, schema)
-            self._indexed_db_ids.add(db_id)
+            self._indexed_db_ids.add(index_key)
 
     def _query_tables_sync(self, query: str, db_id: str, top_k: int) -> list[dict[str, Any]]:
         docs = self._vector_store.similarity_search(

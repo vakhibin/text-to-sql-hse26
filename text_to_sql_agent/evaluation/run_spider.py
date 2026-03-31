@@ -6,19 +6,24 @@ import argparse
 import asyncio
 import json
 import shutil
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import sys
 
 import kagglehub
 from tqdm import tqdm
 
+from text_to_sql_agent.agents.selector import prewarm_selector_cache
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.evaluation.metrics import BenchmarkMetrics, exact_match
 from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import make_initial_state
+from text_to_sql_agent.tools.observability import flush_langfuse
 from text_to_sql_agent.tools.sql_executor import execute_sql
 
 KAGGLE_SPIDER_DATASET = "jeromeblanchet/yale-universitys-spider-10-nlp-dataset"
@@ -108,11 +113,40 @@ def load_spider_examples(spider_root: Path, split: str) -> list[SpiderExample]:
     ]
 
 
-async def _evaluate_one(graph, example: SpiderExample, spider_root: Path) -> dict[str, Any]:
+def _aggregate_usage(records: list[dict[str, Any]], total_examples: int) -> dict[str, Any]:
+    prompt_tokens = sum(int(record.get("prompt_tokens", 0)) for record in records)
+    completion_tokens = sum(int(record.get("completion_tokens", 0)) for record in records)
+    total_tokens = sum(int(record.get("total_tokens", 0)) for record in records)
+    total_cost_usd = sum(float(record.get("cost_usd", 0.0)) for record in records)
+    divisor = total_examples if total_examples else 1
+    return {
+        "llm_calls": len(records),
+        "total_cost_usd": round(total_cost_usd, 8),
+        "avg_cost_per_example_usd": round(total_cost_usd / divisor, 8),
+        "avg_prompt_tokens": round(prompt_tokens / divisor, 2),
+        "avg_completion_tokens": round(completion_tokens / divisor, 2),
+        "avg_total_tokens": round(total_tokens / divisor, 2),
+    }
+
+
+def _strip_internal_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key != "llm_usage"}
+
+
+async def _evaluate_one(
+    graph,
+    example: SpiderExample,
+    spider_root: Path,
+    *,
+    benchmark_run_id: str,
+    example_idx: int,
+) -> dict[str, Any]:
     state = make_initial_state(
         question=example.question,
         db_id=example.db_id,
         evidence=example.evidence,
+        schema_root=str(spider_root),
+        trace_id=f"{benchmark_run_id}:{example_idx}",
     )
     result = await graph.ainvoke(state)
     predicted_sql = (result.get("final_sql") or result.get("best_sql") or "").strip()
@@ -136,6 +170,9 @@ async def _evaluate_one(graph, example: SpiderExample, spider_root: Path) -> dic
         "exact_match": exact_match(predicted_sql, example.query),
         "error_message": result.get("error_message"),
         "warnings": result.get("warnings", []),
+        "trace_id": result.get("trace_id"),
+        "llm_usage": result.get("llm_usage", []),
+        "total_cost_usd": result.get("total_cost_usd", 0.0),
     }
 
 
@@ -145,11 +182,21 @@ async def run_spider_benchmark(
     split: str,
     max_examples: int | None,
     concurrency: int = 1,
-) -> tuple[BenchmarkMetrics, list[dict[str, Any]]]:
+    prewarm: bool = False,
+) -> tuple[BenchmarkMetrics, list[dict[str, Any]], dict[str, Any]]:
+    benchmark_run_id = f"spider-{split}-{uuid4()}"
     graph = build_graph()
     examples = load_spider_examples(spider_root=spider_root, split=split)
     if max_examples is not None:
         examples = examples[:max_examples]
+
+    prewarm_started = time.perf_counter()
+    if prewarm:
+        await prewarm_selector_cache(
+            [example.db_id for example in examples],
+            schema_root=str(spider_root),
+        )
+    prewarm_time_s = time.perf_counter() - prewarm_started
 
     semaphore = asyncio.Semaphore(concurrency)
     results_by_index: dict[int, dict[str, Any]] = {}
@@ -157,13 +204,20 @@ async def run_spider_benchmark(
     em_hits = 0
     err_count = 0
     lock = asyncio.Lock()
+    eval_started = time.perf_counter()
 
     pbar = tqdm(total=len(examples), desc="Spider eval", unit="q", file=sys.stderr)
 
     async def _worker(idx: int, example: SpiderExample) -> None:
         nonlocal exec_hits, em_hits, err_count
         async with semaphore:
-            result = await _evaluate_one(graph, example, spider_root)
+            result = await _evaluate_one(
+                graph,
+                example,
+                spider_root,
+                benchmark_run_id=benchmark_run_id,
+                example_idx=idx,
+            )
 
         async with lock:
             results_by_index[idx] = result
@@ -184,11 +238,14 @@ async def run_spider_benchmark(
 
     await asyncio.gather(*[_worker(i, ex) for i, ex in enumerate(examples)])
     pbar.close()
+    eval_time_s = time.perf_counter() - eval_started
 
-    predictions = [results_by_index[i] for i in range(len(examples))]
+    raw_predictions = [results_by_index[i] for i in range(len(examples))]
+    predictions = [_strip_internal_fields(row) for row in raw_predictions]
     total = len(predictions)
     valid = sum(1 for row in predictions if bool(row["predicted_sql"]))
     errors = err_count
+    usage_records = [record for row in raw_predictions for record in row.get("llm_usage", [])]
 
     metrics = BenchmarkMetrics(
         execution_accuracy=(exec_hits / total) if total else 0.0,
@@ -197,7 +254,14 @@ async def run_spider_benchmark(
         valid_predictions=valid,
         errors=errors,
     )
-    return metrics, predictions
+    summary = {
+        "benchmark_run_id": benchmark_run_id,
+        "prewarm_time_s": round(prewarm_time_s, 4),
+        "eval_time_s": round(eval_time_s, 4),
+        "avg_time_per_example_s": round((eval_time_s / total) if total else 0.0, 4),
+        **_aggregate_usage(usage_records, total),
+    }
+    return metrics, predictions, summary
 
 
 def main() -> None:
@@ -209,6 +273,7 @@ def main() -> None:
     parser.add_argument("--download", action="store_true", default=False, help="Auto-download Spider if missing")
     parser.add_argument("--output", type=str, default="outputs/spider_v1_results.json")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of examples to evaluate in parallel")
+    parser.add_argument("--prewarm", action="store_true", help="Preload schema cache and vector index before scoring")
     parser.add_argument("--spider-root", type=str, default=settings.spider_root)
     args = parser.parse_args()
 
@@ -219,16 +284,16 @@ def main() -> None:
     if args.smoke:
         max_examples = args.smoke_size
 
-    metrics, predictions = asyncio.run(
+    metrics, predictions, summary = asyncio.run(
         run_spider_benchmark(
             spider_root=spider_root,
             split=args.split,
             max_examples=max_examples,
             concurrency=args.concurrency,
+            prewarm=args.prewarm,
         )
     )
 
-    from datetime import datetime
     base = Path(args.output)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = base.with_stem(f"{base.stem}_{stamp}")
@@ -238,6 +303,7 @@ def main() -> None:
         "spider_root": str(spider_root),
         "smoke": args.smoke,
         "max_examples": max_examples,
+        "prewarm": args.prewarm,
         "metrics": {
             "execution_accuracy": metrics.execution_accuracy,
             "exact_match": metrics.exact_match,
@@ -245,16 +311,35 @@ def main() -> None:
             "valid_predictions": metrics.valid_predictions,
             "errors": metrics.errors,
         },
+        "timings": {
+            "prewarm_time_s": summary["prewarm_time_s"],
+            "eval_time_s": summary["eval_time_s"],
+            "avg_time_per_example_s": summary["avg_time_per_example_s"],
+        },
+        "cost": {
+            "llm_calls": summary["llm_calls"],
+            "total_cost_usd": summary["total_cost_usd"],
+            "avg_cost_per_example_usd": summary["avg_cost_per_example_usd"],
+            "avg_prompt_tokens": summary["avg_prompt_tokens"],
+            "avg_completion_tokens": summary["avg_completion_tokens"],
+            "avg_total_tokens": summary["avg_total_tokens"],
+        },
+        "benchmark_run_id": summary["benchmark_run_id"],
         "predictions": predictions,
     }
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    flush_langfuse()
 
     print("Spider v1 evaluation completed")
     print(f"  Split: {args.split}")
     print(f"  Total: {metrics.total}")
     print(f"  EX: {metrics.execution_accuracy:.4f}")
     print(f"  EM: {metrics.exact_match:.4f}")
+    print(f"  Prewarm: {summary['prewarm_time_s']:.2f}s")
+    print(f"  Eval: {summary['eval_time_s']:.2f}s")
+    print(f"  Avg/example: {summary['avg_time_per_example_s']:.2f}s")
+    print(f"  Cost: ${summary['total_cost_usd']:.6f}")
     print(f"  Output: {output_path}")
 
 

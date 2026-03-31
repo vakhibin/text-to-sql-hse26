@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict
 from uuid import uuid4
 
 StageName = Literal["selector", "decomposer", "generator", "execution_filter", "judge", "refiner"]
@@ -17,6 +17,7 @@ class SQLAgentState(TypedDict):
     question: str
     db_id: str
     evidence: Optional[str]
+    schema_root: Optional[str]
 
     # Selector
     full_schema: dict
@@ -45,6 +46,8 @@ class SQLAgentState(TypedDict):
     stage_timings: dict[StageName, float]
     trace_id: str
     warnings: list[str]
+    llm_usage: list[dict[str, Any]]
+    total_cost_usd: float
 
 
 class NodeOutputContract(TypedDict):
@@ -111,6 +114,7 @@ def make_initial_state(
     question: str,
     db_id: str,
     evidence: Optional[str] = None,
+    schema_root: Optional[str] = None,
     trace_id: Optional[str] = None,
 ) -> SQLAgentState:
     """Build deterministic initial state for graph invocation."""
@@ -118,6 +122,7 @@ def make_initial_state(
         "question": question,
         "db_id": db_id,
         "evidence": evidence,
+        "schema_root": schema_root,
         "full_schema": {},
         "filtered_schema": "",
         "complexity": "unknown",
@@ -134,5 +139,7 @@ def make_initial_state(
         "stage_timings": default_stage_timings(),
         "trace_id": trace_id or str(uuid4()),
         "warnings": [],
+        "llm_usage": [],
+        "total_cost_usd": 0.0,
     }
 

@@ -37,6 +37,8 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
     stage_status = dict(state.get("stage_status", {}))
     stage_timings = dict(state.get("stage_timings", {}))
     warnings = list(state.get("warnings", []))
+    llm_usage = list(state.get("llm_usage", []))
+    total_cost_usd = float(state.get("total_cost_usd", 0.0))
     stage_status["generator"] = "running"
 
     try:
@@ -48,7 +50,7 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
         roles = router.generator_roles()
         num_candidates = settings.num_candidates
 
-        async def _run_one(idx: int) -> str:
+        async def _run_one(idx: int) -> tuple[str, dict[str, object]]:
             role = roles[idx % len(roles)]
             examples = sample_examples_for_candidate(
                 pool=pool,
@@ -64,14 +66,19 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 sub_questions=state.get("sub_questions", []),
                 few_shot_examples=examples,
             )
-            response = await router.ainvoke(
+            response = await router.ainvoke_with_metadata(
                 role=role,
                 messages=_build_messages(prompt),
+                trace_id=state.get("trace_id"),
+                db_id=state.get("db_id"),
+                stage="generator",
             )
-            return _extract_sql(response)
+            return _extract_sql(response.text), response.usage
 
-        candidates_raw = await asyncio.gather(*[_run_one(i) for i in range(num_candidates)])
-        candidates = [c for c in candidates_raw if c]
+        generation_results = await asyncio.gather(*[_run_one(i) for i in range(num_candidates)])
+        candidates = [sql for sql, _usage in generation_results if sql]
+        llm_usage.extend(usage for _sql, usage in generation_results)
+        total_cost_usd += sum(float(usage.get("cost_usd", 0.0)) for _sql, usage in generation_results)
         if not candidates:
             warnings.append("generator: no SQL candidates produced")
 
@@ -85,6 +92,8 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 "generator": round(time.perf_counter() - started, 4),
             },
             "warnings": warnings,
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
     except Exception as exc:
         stage_status["generator"] = "failed"
@@ -98,5 +107,7 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 "generator": round(time.perf_counter() - started, 4),
             },
             "warnings": [*warnings, f"generator_error: {exc}"],
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
 

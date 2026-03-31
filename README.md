@@ -20,6 +20,27 @@ uv venv
 uv sync
 ```
 
+### Optional observability
+
+If you want Langfuse tracing during benchmark runs, add these env vars:
+
+```commandline
+LANGFUSE_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+### Benchmark notes
+
+- `run_spider.py` now supports `--prewarm` to preload schema cache and Chroma index before timed evaluation.
+- Benchmark outputs include timing and approximate cost summary:
+  - `prewarm_time_s`
+  - `eval_time_s`
+  - `avg_time_per_example_s`
+  - `total_cost_usd`
+  - `avg_cost_per_example_usd`
+
 
 ## Архитектура текущего агента
 

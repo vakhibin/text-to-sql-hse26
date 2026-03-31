@@ -25,6 +25,8 @@ class AgentSettings(BaseSettings):
 
     # Data and retrieval paths
     spider_root: str = "databases/spider"
+    bird_root: str = "databases/bird"
+    bird_mini_root: str = "databases/bird_mini"
     chroma_persist_directory: str = ".cache/chroma"
     chroma_collection_selector: str = "schema_selector"
 
@@ -59,6 +61,12 @@ class AgentSettings(BaseSettings):
 
     # Execution filter defaults
     execution_timeout_seconds: int = 20
+
+    # Langfuse (optional)
+    langfuse_enabled: bool = False
+    langfuse_public_key: str | None = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str | None = Field(default=None, alias="LANGFUSE_SECRET_KEY")
+    langfuse_host: str = Field(default="https://cloud.langfuse.com", alias="LANGFUSE_HOST")
 
 
 settings = AgentSettings()
