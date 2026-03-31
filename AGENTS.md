@@ -117,6 +117,12 @@ Any optimization based on complexity should still be benchmarked against EX/EM b
 - includes few-shot when available
 - adapts candidate budget by `complexity`
 
+Current few-shot status:
+- few-shot examples are loaded from `train_spider.json`
+- examples are sampled deterministically, with preference for the same `db_id` when possible
+- semantic retrieval over train examples is not implemented yet
+- if Spider metrics plateau, semantic retrieval for few-shot examples is a priority next experiment
+
 `text_to_sql_agent/agents/execution_filter.py`:
 - executes generated SQL
 - drops invalid candidates before judging
@@ -177,6 +183,19 @@ When editing runners:
 - keep timestamped outputs
 - preserve progress bars and live error logging
 - do not silently remove benchmark-level metadata
+
+## Current Experiment Plan
+
+Near-term tuning priority:
+- continue primary model-stack ablations on Spider first
+- if EX stalls around the current plateau, add semantic retrieval for few-shot examples from Spider train
+- evaluate that change on Spider before promoting it to later BIRD runs
+
+Few-shot retrieval direction to preserve:
+- index train examples separately from schema-table retrieval
+- compare dev questions against train questions semantically
+- prefer validated or otherwise strong examples when building the retrieval pool
+- keep this retrieval path distinct from schema linking in Chroma
 
 ## Safety Notes
 

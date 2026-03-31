@@ -128,13 +128,13 @@ text_to_sql_agent/
 
 ## Spider dev: multi-agent run
 
-Статус: `practically completed`. Прогон дошел до `1033/1034`, после чего последний хвост был затронут `OpenRouter 402 / insufficient credits`. Зафиксированные метрики ниже используются как фактический итог этого запуска.
+Статус: `practically completed`. Прогон дошел до `1033/1034`, после чего последний хвост завис до финальной записи JSON. Зафиксированные метрики ниже используются как фактический итог этого запуска.
 
 ### Конфигурация запуска
 
 - Command: `./.venv/bin/python -m text_to_sql_agent.evaluation.run_spider --concurrency 12 --prewarm`
 - Primary generator: `google/gemini-2.5-pro`
-- Secondary generator: `deepseek/deepseek-chat-v3`
+- Secondary generator: `openai/gpt-oss-120b`
 - Judge: `openai/gpt-4.1`
 - Embeddings: `openai/text-embedding-3-large`
 - Candidate budget:
@@ -145,13 +145,20 @@ text_to_sql_agent/
 ### Зафиксированные метрики на момент остановки
 
 - Progress: `1033/1034`
-- Execution Accuracy (EX): `68%`
+- Execution Accuracy (EX): `69%`
 - Exact Match (EM): `21%`
-- Error count: `44`
-- Throughput snapshot: `1:13:32<00:06, 6.59s/q`
+- Error count: `45`
+- Throughput snapshot: `1:24:20<00:15, 15.27s/q`
+- Summary file: `outputs/spider_v1_summary_practical_latest.json`
 
 ### Интерпретация
 
 - По текущему тренду этот запуск выглядел лучше baseline по `EX`.
 - Последний хвост был испорчен нехваткой кредитов, но на итоговые метрики это уже вряд ли влияло существенно.
 - Для строгой повторяемости все равно полезно позже сделать еще один полный чистый прогон без `402` ошибок.
+
+### Ближайший план экспериментов
+
+- Продолжать model ablation на Spider до выхода на устойчивую конфигурацию генераторов.
+- Если метрики застрянут около текущего уровня, следующим архитектурным шагом добавить semantic retrieval для few-shot examples из `train_spider.json`.
+- Делать это как отдельный retrieval-контур для train-примеров, а не смешивать его с текущей schema-vector retrieval логикой.
