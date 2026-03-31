@@ -47,8 +47,12 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
         if not pool:
             warnings.append("generator: few-shot pool unavailable; using zero-shot prompts")
 
-        roles = router.generator_roles()
-        num_candidates = settings.num_candidates
+        complexity = state.get("complexity", "unknown")
+        num_candidates, roles = router.generator_plan_for_complexity(complexity)
+        if complexity == "moderate":
+            warnings.append(
+                "generator: using reduced ensemble budget for moderate complexity"
+            )
 
         async def _run_one(idx: int) -> tuple[str, dict[str, object]]:
             role = roles[idx % len(roles)]
