@@ -34,6 +34,13 @@ def _filter_schema_tables(schema: dict[str, Any], selected: list[str]) -> dict[s
     return {"db_id": schema.get("db_id"), "tables": tables, "db_path": schema.get("db_path")}
 
 
+def _build_retrieved_schema_context(schema: dict[str, Any], candidate_names: list[str]) -> dict[str, Any]:
+    names = [name for name in candidate_names if name]
+    if not names:
+        return {"db_id": schema.get("db_id"), "tables": [], "db_path": schema.get("db_path")}
+    return _filter_schema_tables(schema, names)
+
+
 def _safe_parse_selected_tables(response_text: str) -> list[str]:
     text = (response_text or "").strip()
 
@@ -111,8 +118,10 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         _debug(f"retrieved_candidates={len(candidates)}")
 
         selected_tables: list[str] = []
+        candidate_names: list[str] = []
         if candidates:
             _debug(f"candidate_names={[c.get('table_name') for c in candidates]}")
+            candidate_names = [str(c.get("table_name", "")) for c in candidates if c.get("table_name")]
             prompt = build_selector_rerank_prompt(question=question, candidates=candidates)
             router = LLMRouter()
             response = await router.ainvoke_with_metadata(
@@ -131,7 +140,6 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
             _debug(f"parsed_selected_tables={selected_tables}")
             selected_tables = [name for name in selected_tables if name][: settings.selector_target_tables_max]
 
-            candidate_names = [str(c.get("table_name", "")) for c in candidates if c.get("table_name")]
             # Keep only names that actually exist in retrieved candidates.
             selected_tables = [name for name in selected_tables if name in candidate_names]
             _debug(f"selected_after_filter={selected_tables}")
@@ -154,12 +162,14 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
             _debug("no_candidates_found_using_full_schema")
 
         filtered_schema = _filter_schema_tables(schema, selected_tables)
+        retrieved_schema = _build_retrieved_schema_context(schema, candidate_names)
         _debug(f"final_selected_tables={selected_tables}")
         stage_status["selector"] = "success"
         return {
             **state,
             "full_schema": schema,
             "filtered_schema": schema_to_mschema(filtered_schema, schema_root=schema_root),
+            "retrieved_schema_context": schema_to_mschema(retrieved_schema, schema_root=schema_root),
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,

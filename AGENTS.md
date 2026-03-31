@@ -97,7 +97,17 @@ If reranker output is malformed:
 - `unknown`
 
 This currently feeds generator prompting.
-It is also a natural future control signal for fast-path routing, but any optimization based on complexity should be benchmarked against EX/EM before becoming default.
+It now also feeds routing policy:
+- `simple`: eligible for a cheap path after execution validation
+- `moderate`: uses a reduced generator ensemble budget
+- `complex` and `unknown`: stay on the fuller default ensemble
+
+Current runtime knobs live in `.env` / `config.py`:
+- `NUM_CANDIDATES`, `PRIMARY_CALLS`, `SECONDARY_CALLS`
+- `MODERATE_NUM_CANDIDATES`, `MODERATE_PRIMARY_CALLS`, `MODERATE_SECONDARY_CALLS`
+- `SIMPLE_SKIP_JUDGE_WHEN_VALID`
+
+Any optimization based on complexity should still be benchmarked against EX/EM before becoming default.
 
 ## Generation And Validation
 
@@ -105,18 +115,28 @@ It is also a natural future control signal for fast-path routing, but any optimi
 - generates an ensemble of candidates asynchronously
 - uses model-role routing
 - includes few-shot when available
+- adapts candidate budget by `complexity`
 
 `text_to_sql_agent/agents/execution_filter.py`:
 - executes generated SQL
 - drops invalid candidates before judging
+- can promote the first valid candidate directly to `best_sql` for `simple` queries
 
 `text_to_sql_agent/agents/judge.py`:
 - selects best candidate
 - should degrade gracefully on parse/provider failures
+- may be skipped on the simple-query cheap path
 
 `text_to_sql_agent/agents/refiner.py`:
 - retries SQL correction using execution feedback
 - must never destroy the last usable SQL candidate
+- now runs a lightweight schema-reference validation before DB execution
+
+`text_to_sql_agent/tools/sql_schema_validator.py`:
+- uses `sqlglot` to parse SQLite SQL into an AST
+- validates referenced tables against the loaded schema
+- validates qualified and unqualified column references against available sources
+- can surface deterministic schema errors to the refiner before the query reaches SQLite
 
 ## Cost And Observability
 
@@ -164,6 +184,8 @@ When editing runners:
 - Do not assume Spider and BIRD have the same schema layout.
 - Prefer graceful degradation to hard failure in selector/decomposer/judge.
 - If changing routing or fast-path logic, compare against `docs/baseline_results.md`.
+- Keep `AGENTS.md`, `.env.example`, and `.env` aligned when changing generator budgets or cheap-path flags.
+- Keep schema validation lightweight and non-destructive: it should catch obvious table/column mistakes, not over-constrain valid SQL patterns.
 
 ## Good Next Places To Look
 

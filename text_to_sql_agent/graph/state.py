@@ -22,6 +22,7 @@ class SQLAgentState(TypedDict):
     # Selector
     full_schema: dict
     filtered_schema: str
+    retrieved_schema_context: str
 
     # Decomposer
     complexity: ComplexityLevel
@@ -125,6 +126,7 @@ def make_initial_state(
         "schema_root": schema_root,
         "full_schema": {},
         "filtered_schema": "",
+        "retrieved_schema_context": "",
         "complexity": "unknown",
         "sub_questions": [],
         "candidates": [],

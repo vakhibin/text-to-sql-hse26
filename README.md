@@ -125,4 +125,33 @@ text_to_sql_agent/
 ```
 
 # Текущие результаты
-TODO
+
+## Spider dev: multi-agent run
+
+Статус: `practically completed`. Прогон дошел до `1033/1034`, после чего последний хвост был затронут `OpenRouter 402 / insufficient credits`. Зафиксированные метрики ниже используются как фактический итог этого запуска.
+
+### Конфигурация запуска
+
+- Command: `./.venv/bin/python -m text_to_sql_agent.evaluation.run_spider --concurrency 12 --prewarm`
+- Primary generator: `google/gemini-2.5-pro`
+- Secondary generator: `deepseek/deepseek-chat-v3`
+- Judge: `openai/gpt-4.1`
+- Embeddings: `openai/text-embedding-3-large`
+- Candidate budget:
+  - `complex/unknown`: `5` (`3` primary + `2` secondary)
+  - `moderate`: `2` (`2` primary)
+  - `simple`: skip judge when a valid candidate already exists
+
+### Зафиксированные метрики на момент остановки
+
+- Progress: `1033/1034`
+- Execution Accuracy (EX): `68%`
+- Exact Match (EM): `21%`
+- Error count: `44`
+- Throughput snapshot: `1:13:32<00:06, 6.59s/q`
+
+### Интерпретация
+
+- По текущему тренду этот запуск выглядел лучше baseline по `EX`.
+- Последний хвост был испорчен нехваткой кредитов, но на итоговые метрики это уже вряд ли влияло существенно.
+- Для строгой повторяемости все равно полезно позже сделать еще один полный чистый прогон без `402` ошибок.

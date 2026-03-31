@@ -77,7 +77,7 @@ def build_graph():
     graph.add_conditional_edges(
         "execution_filter",
         _route_after_execution_filter,
-        {"judge": "judge", "finish": END},
+        {"judge": "judge", "refiner": "refiner", "finish": END},
     )
     graph.add_conditional_edges(
         "judge",

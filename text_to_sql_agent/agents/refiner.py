@@ -9,6 +9,7 @@ from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.refiner import build_refiner_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
+from text_to_sql_agent.tools.sql_schema_validator import validate_sql_schema_references
 from text_to_sql_agent.tools.sql_executor import execute_sql
 
 
@@ -64,12 +65,20 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             "total_cost_usd": total_cost_usd,
         }
 
-    execution = await execute_sql(
-        db_path,
-        current_sql,
-        timeout_seconds=settings.execution_timeout_seconds,
-    )
-    if execution.success:
+    validation = validate_sql_schema_references(current_sql, state.get("full_schema", {}))
+    if not validation.is_valid:
+        execution = None
+        warnings.append(validation.error_message())
+        execution_error = validation.error_message()
+    else:
+        execution = await execute_sql(
+            db_path,
+            current_sql,
+            timeout_seconds=settings.execution_timeout_seconds,
+        )
+        execution_error = execution.error or "Unknown execution error."
+
+    if execution and execution.success:
         stage_status["refiner"] = "success"
         return {
             **state,
@@ -88,13 +97,13 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
 
     # Execution failed: prepare one refinement step.
     attempts = int(state.get("refine_attempts", 0)) + 1
-    execution_error = execution.error or "Unknown execution error."
     next_sql = current_sql
 
     try:
         prompt = build_refiner_prompt(
             question=state.get("question", ""),
             filtered_schema=state.get("filtered_schema", ""),
+            retrieved_schema_context=state.get("retrieved_schema_context", ""),
             failed_sql=current_sql,
             execution_error=execution_error,
         )
