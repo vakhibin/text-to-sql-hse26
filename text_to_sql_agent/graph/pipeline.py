@@ -27,7 +27,9 @@ def _route_after_generator(state: SQLAgentState) -> str:
 
 
 def _route_after_execution_filter(state: SQLAgentState) -> str:
-    """Judge valid candidates or fall back to raw generated candidates."""
+    """Skip judge on cheap path, otherwise judge surviving candidates."""
+    if state.get("best_sql"):
+        return "refiner"
     if state.get("valid_candidates") or state.get("candidates"):
         return "judge"
     return "finish"

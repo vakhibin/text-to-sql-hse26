@@ -72,10 +72,24 @@ async def run_execution_filter(state: SQLAgentState) -> SQLAgentState:
         if not valid_candidates:
             warnings.append("execution_filter: no valid candidates after execution")
 
+        best_sql = state.get("best_sql", "")
+        judge_reasoning = state.get("judge_reasoning", "")
+        if (
+            state.get("complexity") == "simple"
+            and settings.simple_skip_judge_when_valid
+            and valid_candidates
+        ):
+            best_sql = valid_candidates[0]
+            judge_reasoning = "Skipped judge for simple query after execution validation."
+            stage_status["judge"] = "skipped"
+            warnings.append("execution_filter: skipped judge for simple query with valid candidate")
+
         stage_status["execution_filter"] = "success"
         return {
             **state,
             "valid_candidates": valid_candidates,
+            "best_sql": best_sql,
+            "judge_reasoning": judge_reasoning,
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,
