@@ -145,6 +145,10 @@ Current few-shot status:
 - selects best candidate
 - should degrade gracefully on parse/provider failures
 - may be skipped on the simple-query cheap path
+- next hardening target:
+  - give judge richer candidate context, not just raw SQL
+  - include schema context, execution outcomes, validation warnings, and compact candidate differences
+  - benchmark whether a stronger judge model improves selection enough to justify cost
 
 `text_to_sql_agent/agents/refiner.py`:
 - retries SQL correction using execution feedback
@@ -211,6 +215,7 @@ Near-term tuning priority:
 - reserve full Spider dev runs for changes that already look promising on the subset
 - first priority: prototype a `query-sketcher` stage between `decomposer` and `generator`
 - second priority: add an AST-based repair tool inside `refiner`
+- next priority after sketch/refiner stabilization: harden `judge` and generator prompts
 - then continue model-stack ablations and retrieval tuning on Spider before promoting changes to BIRD
 
 Spider debug subset policy:
@@ -229,6 +234,25 @@ Query-sketcher direction to preserve:
 - capture tables, join intent, filters, grouping, ordering, and whether subqueries are needed
 - feed the sketch into `generator` as a grounding scaffold, not as an end-user artifact
 - keep the prompt strict about schema grounding and explicit about uncertainty reporting
+
+Judge hardening direction to preserve:
+- consider a stronger judge model as an experiment axis, not as a silent default
+- prefer richer comparison context over longer free-form reasoning
+- explicitly penalize unnecessary joins, wrong projection shape, bag-semantics mistakes, and schema drift
+
+Generator prompt direction to preserve:
+- preserve output column order to follow the question wording unless the question explicitly asks for another order
+- prefer the simplest valid query shape; avoid joins when a single-table query is sufficient
+- keep output shape faithful to the requested projection before optimizing for stylistic SQL preferences
+
+Evaluation analysis direction to preserve:
+- add analytic labels for near-miss failures instead of treating all mismatches as one bucket
+- first useful labels:
+  - `projection-order mismatch`
+  - `projection-width mismatch`
+  - `duplicate-row mismatch`
+  - `unnecessary-join mismatch`
+  - `aggregation-shape mismatch`
 
 AST-repair direction to preserve:
 - keep deterministic repairs narrow and reversible
