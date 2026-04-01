@@ -120,8 +120,8 @@ Any optimization based on complexity should still be benchmarked against EX/EM b
 Current few-shot status:
 - few-shot examples are loaded from `train_spider.json`
 - examples are sampled deterministically, with preference for the same `db_id` when possible
-- semantic retrieval over train examples is not implemented yet
-- if Spider metrics plateau, semantic retrieval for few-shot examples is a priority next experiment
+- semantic retrieval over train examples now exists as an optional experiment path
+- if Spider metrics plateau, treat few-shot retrieval as a tunable lever rather than a guaranteed improvement
 
 `text_to_sql_agent/agents/execution_filter.py`:
 - executes generated SQL
@@ -137,12 +137,17 @@ Current few-shot status:
 - retries SQL correction using execution feedback
 - must never destroy the last usable SQL candidate
 - now runs a lightweight schema-reference validation before DB execution
+- is a natural place for future deterministic repair tools before or alongside the LLM fix step
 
 `text_to_sql_agent/tools/sql_schema_validator.py`:
 - uses `sqlglot` to parse SQLite SQL into an AST
 - validates referenced tables against the loaded schema
 - validates qualified and unqualified column references against available sources
 - can surface deterministic schema errors to the refiner before the query reaches SQLite
+
+Planned architectural follow-ups:
+- `query-sketcher`: add an explicit query-plan stage before SQL generation
+- `ast-repair` tool: use SQL AST-based deterministic repair inside `refiner` for obvious table/column/qualification fixes
 
 ## Cost And Observability
 
@@ -187,15 +192,25 @@ When editing runners:
 ## Current Experiment Plan
 
 Near-term tuning priority:
-- continue primary model-stack ablations on Spider first
-- if EX stalls around the current plateau, add semantic retrieval for few-shot examples from Spider train
-- evaluate that change on Spider before promoting it to later BIRD runs
+- first priority: prototype a `query-sketcher` stage between `decomposer` and `generator`
+- second priority: add an AST-based repair tool inside `refiner`
+- then continue model-stack ablations and retrieval tuning on Spider before promoting changes to BIRD
 
 Few-shot retrieval direction to preserve:
 - index train examples separately from schema-table retrieval
 - compare dev questions against train questions semantically
 - prefer validated or otherwise strong examples when building the retrieval pool
 - keep this retrieval path distinct from schema linking in Chroma
+
+Query-sketcher direction to preserve:
+- output a compact structured plan rather than full SQL
+- capture tables, join intent, filters, grouping, ordering, and whether subqueries are needed
+- feed the sketch into `generator` as a grounding scaffold, not as an end-user artifact
+
+AST-repair direction to preserve:
+- keep deterministic repairs narrow and reversible
+- target obvious hallucinated identifiers, missing qualifications, and simple syntax/structure cleanups
+- fall back to the LLM refiner for semantic fixes that code cannot safely infer
 
 ## Safety Notes
 

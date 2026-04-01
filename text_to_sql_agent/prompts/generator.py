@@ -53,7 +53,10 @@ mSchema:
 2) Use SQLite-compatible SQL.
 3) Prefer explicit JOINs with ON clauses.
 4) Include all required filters from the question.
-5) End query with semicolon.
+5) If the question uses synonyms or informal wording, map them to the closest schema items that actually exist. Never rename schema identifiers to match the wording of the question.
+6) Do not invent missing derived columns or guessed identifiers. If a column/table is not explicitly present in the schema, do not use it.
+7) When uncertain between natural-language wording and schema naming, trust the schema naming.
+8) End query with semicolon.
 
 SQL:
 """.strip()
