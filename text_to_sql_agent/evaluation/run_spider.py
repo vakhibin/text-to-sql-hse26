@@ -191,6 +191,22 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp_path, path)
 
 
+def _should_write_partial(*, completed: int, total: int) -> bool:
+    """Write less often early, but much more often near benchmark tail."""
+    if completed <= 0 or total <= 0:
+        return False
+    if completed == total:
+        return True
+    remaining = total - completed
+    if remaining <= 5:
+        interval = 1
+    elif remaining <= 20:
+        interval = 5
+    else:
+        interval = 25
+    return completed % interval == 0
+
+
 def _summarize_partial_results(
     *,
     benchmark_run_id: str,
@@ -370,6 +386,7 @@ async def run_spider_benchmark(
     async def _worker(idx: int, example: SpiderExample) -> None:
         nonlocal exec_hits, em_hits, err_count
         async with semaphore:
+            example_task: asyncio.Task[dict[str, Any]] | None = None
             try:
                 coroutine = _evaluate_one(
                     graph,
@@ -378,11 +395,18 @@ async def run_spider_benchmark(
                     benchmark_run_id=benchmark_run_id,
                     example_idx=idx,
                 )
+                example_task = asyncio.create_task(coroutine)
+                example_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
                 if example_timeout_seconds and example_timeout_seconds > 0:
-                    result = await asyncio.wait_for(coroutine, timeout=example_timeout_seconds)
+                    result = await asyncio.wait_for(
+                        asyncio.shield(example_task),
+                        timeout=example_timeout_seconds,
+                    )
                 else:
-                    result = await coroutine
+                    result = await example_task
             except asyncio.TimeoutError:
+                if example_task is not None and not example_task.done():
+                    example_task.cancel()
                 result = {
                     "db_id": example.db_id,
                     "question": example.question,
@@ -397,6 +421,8 @@ async def run_spider_benchmark(
                     "total_cost_usd": 0.0,
                 }
             except Exception as exc:
+                if example_task is not None and not example_task.done():
+                    example_task.cancel()
                 result = {
                     "db_id": example.db_id,
                     "question": example.question,
@@ -427,7 +453,7 @@ async def run_spider_benchmark(
             done = len(results_by_index)
             pbar.set_postfix(EX=f"{exec_hits/done:.0%}", EM=f"{em_hits/done:.0%}", err=err_count)
             pbar.update(1)
-            if partial_output_path and (done % 25 == 0 or done == len(examples)):
+            if partial_output_path and _should_write_partial(completed=done, total=len(examples)):
                 partial_rows = [results_by_index[i] for i in sorted(results_by_index)]
                 partial_metrics, partial_predictions, partial_summary = _summarize_partial_results(
                     benchmark_run_id=benchmark_run_id,
