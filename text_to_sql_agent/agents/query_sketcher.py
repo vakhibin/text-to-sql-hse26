@@ -177,7 +177,7 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
         )
         router = LLMRouter()
         response = await router.ainvoke_with_metadata(
-            role=ModelRole.GENERATOR_PRIMARY,
+            role=ModelRole.QUERY_SKETCHER,
             messages=[
                 ("system", "Return strict JSON only. Do not output SQL."),
                 ("user", prompt),

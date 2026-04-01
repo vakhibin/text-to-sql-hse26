@@ -20,6 +20,7 @@ class AgentSettings(BaseSettings):
     # Fixed model policy (can be overridden by env if needed)
     generator_model_primary: str = "google/gemini-2.5-pro"
     generator_model_secondary: str = "deepseek/deepseek-chat-v3"
+    query_sketcher_model: str | None = None
     judge_model: str = "openai/gpt-4.1"
     embeddings_model: str = "openai/text-embedding-3-small"
 

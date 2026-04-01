@@ -25,6 +25,7 @@ class ModelRole(StrEnum):
 
     GENERATOR_PRIMARY = "generator_primary"
     GENERATOR_SECONDARY = "generator_secondary"
+    QUERY_SKETCHER = "query_sketcher"
     JUDGE = "judge"
     REFINER = "refiner"
 
@@ -64,6 +65,8 @@ class LLMRouter:
             return settings.generator_model_primary
         if role == ModelRole.GENERATOR_SECONDARY:
             return settings.generator_model_secondary
+        if role == ModelRole.QUERY_SKETCHER:
+            return settings.query_sketcher_model or settings.generator_model_primary
         if role == ModelRole.JUDGE:
             return settings.judge_model
         if role == ModelRole.REFINER:
@@ -77,6 +80,8 @@ class LLMRouter:
             return settings.llm_temperature_primary
         if role == ModelRole.GENERATOR_SECONDARY:
             return settings.llm_temperature_secondary
+        if role == ModelRole.QUERY_SKETCHER:
+            return settings.llm_temperature_judge
         return settings.llm_temperature_judge
 
     def get_chat_model(

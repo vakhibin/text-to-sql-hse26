@@ -109,6 +109,7 @@ If you want an even cheaper smoke check inside the fixed subset:
 |---|---|---|
 | Основной генератор | `google/gemini-2.5-pro` | Генерация SQL (5 из 8 кандидатов) |
 | Дополнительный генератор | `deepseek/deepseek-chat-v3` | Разнообразие в ансамбле (3 из 8 кандидатов) |
+| Query Sketcher | `QUERY_SKETCHER_MODEL` или primary generator | Построение schema-grounded плана до генерации SQL |
 | Судья | `openai/gpt-4.1` | Выбор лучшего кандидата |
 | Эмбеддинги | `openai/text-embedding-3-large` | Векторный поиск по схеме |
 | Реранкер селектора | Основной генератор | Переранжирование таблиц |

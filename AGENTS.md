@@ -40,6 +40,7 @@ Configured in `text_to_sql_agent/config.py`.
 Current intended roles:
 - Primary generator: `google/gemini-2.5-pro`
 - Secondary generator: `deepseek/deepseek-chat-v3`
+- Query sketcher: configurable separately via `QUERY_SKETCHER_MODEL` (fallback: primary generator)
 - Judge: `openai/gpt-4.1`
 - Embeddings: `openai/text-embedding-3-large`
 
