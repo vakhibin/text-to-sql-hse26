@@ -125,6 +125,10 @@ Any optimization based on complexity should still be benchmarked against EX/EM b
 - produces a compact schema-grounded query plan instead of SQL
 - should identify likely tables, join path, filters, aggregations, grouping, ordering, and subquery need
 - must stay conservative: ambiguity should become an explicit risk, not a hallucinated identifier
+- now uses a three-step reliability path:
+  - tolerant JSON parsing of the raw response
+  - structured-output repair when the raw JSON is malformed
+  - deterministic fallback sketch so `generator` still receives a planning scaffold
 
 Current few-shot status:
 - few-shot examples are loaded from `train_spider.json`

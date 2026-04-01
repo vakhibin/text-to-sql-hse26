@@ -2,14 +2,47 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import time
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.query_sketcher import build_query_sketcher_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
+
+
+class QuerySketchTableItem(BaseModel):
+    table: str
+    columns: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class QuerySketchJoinItem(BaseModel):
+    left_table: str
+    right_table: str
+    join_keys: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class QuerySketchSchema(BaseModel):
+    intent: str = "other"
+    task_summary: str = ""
+    candidate_tables: list[QuerySketchTableItem] = Field(default_factory=list)
+    join_plan: list[QuerySketchJoinItem] = Field(default_factory=list)
+    filters: list[str] = Field(default_factory=list)
+    aggregations: list[str] = Field(default_factory=list)
+    grouping: list[str] = Field(default_factory=list)
+    ordering: list[str] = Field(default_factory=list)
+    limit: str = "none"
+    subquery_needed: bool = False
+    set_operation: str = "none"
+    ambiguities: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    generation_hints: list[str] = Field(default_factory=list)
 
 
 def _extract_json_blob(text: str) -> str:
@@ -20,6 +53,54 @@ def _extract_json_blob(text: str) -> str:
 
     match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
     return match.group(0) if match else stripped
+
+
+def _json_candidate_variants(text: str) -> list[str]:
+    blob = _extract_json_blob(text)
+    normalized = (
+        blob.replace("“", '"')
+        .replace("”", '"')
+        .replace("’", "'")
+        .replace("‘", "'")
+        .strip()
+    )
+    variants = [normalized]
+    variants.append(re.sub(r",(\s*[}\]])", r"\1", normalized))
+    variants.append(re.sub(r"\bTrue\b", "true", normalized))
+    variants.append(re.sub(r"\bFalse\b", "false", normalized))
+    variants.append(re.sub(r"\bNone\b", "null", normalized))
+    variants.append(
+        re.sub(
+            r"\bNone\b",
+            "null",
+            re.sub(r"\bFalse\b", "false", re.sub(r"\bTrue\b", "true", variants[-1])),
+        )
+    )
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        value = variant.strip()
+        if value and value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    return deduped
+
+
+def _load_jsonish_payload(text: str) -> dict[str, Any] | None:
+    for candidate in _json_candidate_variants(text):
+        try:
+            payload = json.loads(candidate)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+        try:
+            payload = ast.literal_eval(candidate)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            continue
+    return None
 
 
 def _normalize_string_list(value: Any) -> list[str]:
@@ -131,12 +212,79 @@ def _format_query_sketch_text(sketch: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def _parse_query_sketch(response_text: str) -> tuple[dict[str, Any], str, str | None]:
-    try:
-        payload = json.loads(_extract_json_blob(response_text))
-    except Exception:
-        return {}, "", "query_sketcher: failed to parse JSON response"
+def _build_minimal_fallback_sketch(state: SQLAgentState) -> tuple[dict[str, Any], str]:
+    filtered_schema = state.get("filtered_schema", "")
+    sub_questions = state.get("sub_questions", [])
+    table_names = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\(", filtered_schema)
+    unique_tables: list[str] = []
+    for table in table_names:
+        if table not in unique_tables:
+            unique_tables.append(table)
 
+    question = state.get("question", "").strip()
+    question_lower = question.lower()
+    candidate_tables = [
+        {
+            "table": table,
+            "columns": [],
+            "reason": "Selected schema table from selector context.",
+        }
+        for table in unique_tables[:3]
+    ]
+
+    aggregations: list[str] = []
+    grouping: list[str] = []
+    ordering: list[str] = []
+    filters: list[str] = []
+    generation_hints = [
+        "Use only selected schema tables and columns.",
+        "Prefer the simplest SQL that satisfies the question.",
+    ]
+    if any(keyword in question_lower for keyword in ("count", "many", "number of")):
+        aggregations.append("count-related aggregation may be needed")
+    if any(keyword in question_lower for keyword in ("average", "avg", "minimum", "maximum", "sum", "total")):
+        aggregations.append("aggregate function likely needed")
+    if "each" in question_lower or "per " in question_lower:
+        grouping.append("grouping may be needed")
+    if any(keyword in question_lower for keyword in ("order", "sorted", "highest", "lowest", "youngest", "oldest")):
+        ordering.append("ordering may be needed")
+    if any(keyword in question_lower for keyword in ("after", "before", "between", "not", "only", "from", "in")):
+        filters.append("apply the question's filter conditions carefully")
+    if sub_questions:
+        generation_hints.extend(sub_questions[:3])
+    if candidate_tables:
+        generation_hints.append("Start from the first candidate table unless the question clearly needs a join.")
+
+    set_operation = "none"
+    if "intersect" in question_lower or "both" in question_lower:
+        set_operation = "intersect"
+    elif "except" in question_lower or "not in" in question_lower:
+        set_operation = "except"
+    elif "union" in question_lower or "either" in question_lower:
+        set_operation = "union"
+
+    sketch = {
+        "intent": "other",
+        "task_summary": question or "Fallback sketch from question and selected schema.",
+        "candidate_tables": candidate_tables,
+        "join_plan": [],
+        "filters": filters,
+        "aggregations": aggregations,
+        "grouping": grouping,
+        "ordering": ordering,
+        "limit": "none",
+        "subquery_needed": set_operation != "none" or any(
+            keyword in question_lower for keyword in ("most", "least", "than", "not", "both")
+        ),
+        "set_operation": set_operation,
+        "ambiguities": [],
+        "risks": ["Fallback sketch used because query-sketcher output was unavailable or malformed."],
+        "generation_hints": generation_hints[:6],
+    }
+    return sketch, _format_query_sketch_text(sketch)
+
+
+def _normalize_query_sketch_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     sketch = {
         "intent": str(payload.get("intent", "other")).strip() or "other",
         "task_summary": str(payload.get("task_summary", "")).strip(),
@@ -153,7 +301,63 @@ def _parse_query_sketch(response_text: str) -> tuple[dict[str, Any], str, str | 
         "risks": _normalize_string_list(payload.get("risks", [])),
         "generation_hints": _normalize_string_list(payload.get("generation_hints", [])),
     }
-    return sketch, _format_query_sketch_text(sketch), None
+    return sketch, _format_query_sketch_text(sketch)
+
+
+def _parse_query_sketch(response_text: str) -> tuple[dict[str, Any], str, str | None]:
+    payload = _load_jsonish_payload(response_text)
+    if payload is None:
+        return {}, "", "query_sketcher: failed to parse JSON response"
+    sketch, sketch_text = _normalize_query_sketch_payload(payload)[:2]
+    return sketch, sketch_text, None
+
+
+async def _repair_query_sketch_with_structured_output(
+    *,
+    router: LLMRouter,
+    response_text: str,
+    state: SQLAgentState,
+) -> tuple[dict[str, Any], str, list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
+    usage_records: list[dict[str, Any]] = []
+    llm = router.get_chat_model(ModelRole.QUERY_SKETCHER, temperature_override=0.0)
+    structured_llm = llm.with_structured_output(QuerySketchSchema, include_raw=True)
+    repaired = await structured_llm.ainvoke(
+        [
+            ("system", "Convert the draft into valid structured output only. Do not output SQL."),
+            (
+                "user",
+                "Normalize this draft query sketch into the target schema. "
+                "Keep it compact, schema-grounded, and valid for the structured schema.\n\n"
+                f"Question: {state.get('question', '')}\n"
+                f"Selected schema:\n{state.get('filtered_schema', '')}\n\n"
+                f"Draft sketch:\n{response_text}",
+            ),
+        ]
+    )
+
+    raw_response = repaired.get("raw") if isinstance(repaired, dict) else None
+    parsed = repaired.get("parsed") if isinstance(repaired, dict) else None
+    parsing_error = repaired.get("parsing_error") if isinstance(repaired, dict) else None
+    if raw_response is not None:
+        usage = router._extract_usage(
+            response=raw_response,
+            model_name=router.model_for_role(ModelRole.QUERY_SKETCHER),
+            stage="sketcher_repair",
+        )
+        usage_records.append(usage.as_dict())
+    if parsing_error is not None:
+        warnings.append(f"query_sketcher: structured repair failed ({parsing_error})")
+    if parsed is None:
+        return {}, "", usage_records, warnings
+    if isinstance(parsed, BaseModel):
+        payload = parsed.model_dump()
+    elif isinstance(parsed, dict):
+        payload = parsed
+    else:
+        return {}, "", usage_records, [*warnings, "query_sketcher: structured repair returned no payload"]
+    sketch, sketch_text = _normalize_query_sketch_payload(payload)[:2]
+    return sketch, sketch_text, usage_records, warnings
 
 
 async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
@@ -193,9 +397,27 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
         sketch, sketch_text, parse_warning = _parse_query_sketch(response.text)
         if parse_warning:
             warnings.append(parse_warning)
+            try:
+                repaired_sketch, repaired_text, repair_usage, repair_warnings = (
+                    await _repair_query_sketch_with_structured_output(
+                        router=router,
+                        response_text=response.text,
+                        state=state,
+                    )
+                )
+                if repair_usage:
+                    llm_usage.extend(repair_usage)
+                    total_cost_usd += sum(float(item.get("cost_usd", 0.0)) for item in repair_usage)
+                warnings.extend(repair_warnings)
+                if repaired_sketch:
+                    sketch, sketch_text = repaired_sketch, repaired_text
+                    warnings.append("query_sketcher: repaired malformed sketch with structured-output fallback")
+            except Exception as repair_exc:
+                warnings.append(f"query_sketcher: structured repair unavailable ({repair_exc})")
 
         if not sketch:
-            warnings.append("query_sketcher: empty sketch, generator will fall back to schema + decomposition only")
+            sketch, sketch_text = _build_minimal_fallback_sketch(state)
+            warnings.append("query_sketcher: used deterministic fallback sketch")
 
         stage_status["sketcher"] = "success"
         return {

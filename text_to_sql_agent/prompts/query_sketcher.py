@@ -26,13 +26,16 @@ def build_query_sketcher_prompt(
         else ""
     )
     return f"""
-You are `query-sketcher`, a planning agent inside a Text-to-SQL system.
+You are `query-sketcher`, a planning stage inside a Text-to-SQL system.
 
-Your job is to create a compact SQL generation plan BEFORE SQL is written.
-You must be schema-grounded, conservative, and useful for a downstream SQL generator.
-Do NOT write SQL.
-Do NOT explain outside JSON.
+Goal:
+- Build a compact, schema-grounded query plan BEFORE SQL generation.
+- Return JSON only.
+- Do not output SQL.
+- Do not output markdown.
+- Use short phrases, not paragraphs.
 
+Inputs:
 Question:
 {question}
 
@@ -45,25 +48,20 @@ Decomposition hints:
 Primary selected schema:
 {filtered_schema}
 
-{broader_schema_block}Think like a database planner:
-1. Identify the likely tables and columns that are actually needed.
-2. Infer the likely join path only when it is grounded in the provided schema.
-3. List filters, aggregations, grouping, ordering, limit, and whether a subquery is likely needed.
-4. Highlight ambiguity or risk instead of hallucinating identifiers.
-5. Produce a plan that helps SQL generation stay faithful to the schema and the question wording.
+{broader_schema_block}Rules:
+- Use only tables and columns that appear in the provided schema context.
+- Never invent identifiers, aliases like `T1`/`T2`, or derived columns.
+- If uncertain, leave the relevant list short or empty and record the uncertainty in `ambiguities` or `risks`.
+- Order `candidate_tables` from most likely to least likely.
+- Keep `candidate_tables` to at most 4 items.
+- Keep `join_plan` to at most 3 items.
+- Keep `generation_hints` to 3-6 short items.
+- `join_plan` should be empty when no join is clearly needed.
+- `subquery_needed` should be true only when nesting, set operations, exclusion, or comparison to aggregate values is likely required.
+- Use lowercase JSON booleans: `true` / `false`.
+- Use double-quoted JSON strings.
 
-Hard grounding rules:
-- Use ONLY schema items present in the provided schema context.
-- Never invent tables, columns, foreign keys, aliases, or derived fields.
-- If the question wording and schema naming differ, map to the closest real schema item.
-- If something is unclear, say it is uncertain in `ambiguities` or `risks` instead of guessing.
-- Prefer concise field values over long prose.
-- If the query looks simple, the sketch should still mention the essential filter/order/aggregation decisions.
-- `candidate_tables` should be ordered from most likely to least likely.
-- `join_plan` should be empty when no join is needed or when the join path is too uncertain.
-- `subquery_needed` should be true only when the question likely requires nesting, set operations, comparison to aggregates, or exclusion logic.
-
-Return STRICT JSON with exactly this shape:
+Return STRICT JSON with exactly these keys:
 {{
   "intent": "lookup|aggregation|comparison|ranking|existence|set_operation|other",
   "task_summary": "one short sentence",
