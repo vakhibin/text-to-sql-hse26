@@ -11,10 +11,11 @@ The main pipeline lives in `text_to_sql_agent/graph/pipeline.py` and is:
 
 1. `selector`
 2. `decomposer`
-3. `generator`
-4. `execution_filter`
-5. `judge`
-6. `refiner`
+3. `sketcher`
+4. `generator`
+5. `execution_filter`
+6. `judge`
+7. `refiner`
 
 The graph has conditional exits and one retry loop on `refiner`.
 
@@ -25,7 +26,7 @@ The shared LangGraph state is defined in `text_to_sql_agent/graph/state.py`.
 Important fields:
 - Input: `question`, `db_id`, `evidence`, `schema_root`
 - Schema: `full_schema`, `filtered_schema`
-- Decomposition: `complexity`, `sub_questions`
+- Decomposition/planning: `complexity`, `sub_questions`, `query_sketch`, `query_sketch_text`
 - Generation: `candidates`, `valid_candidates`
 - Selection/refinement: `best_sql`, `final_sql`, `refine_attempts`, `error_message`
 - Observability: `trace_id`, `warnings`, `stage_status`, `stage_timings`, `llm_usage`, `total_cost_usd`
@@ -116,6 +117,13 @@ Any optimization based on complexity should still be benchmarked against EX/EM b
 - uses model-role routing
 - includes few-shot when available
 - adapts candidate budget by `complexity`
+- now consumes `query-sketcher` output as a planning scaffold before writing SQL
+
+`text_to_sql_agent/agents/query_sketcher.py`:
+- runs after `decomposer` and before `generator`
+- produces a compact schema-grounded query plan instead of SQL
+- should identify likely tables, join path, filters, aggregations, grouping, ordering, and subquery need
+- must stay conservative: ambiguity should become an explicit risk, not a hallucinated identifier
 
 Current few-shot status:
 - few-shot examples are loaded from `train_spider.json`
@@ -176,6 +184,7 @@ BIRD runner:
 
 Current runner expectations:
 - support `--prewarm`
+- support `--subset-manifest` for stable cheap Spider debug runs
 - emit timing summary:
   - `prewarm_time_s`
   - `eval_time_s`
@@ -188,13 +197,21 @@ When editing runners:
 - keep timestamped outputs
 - preserve progress bars and live error logging
 - do not silently remove benchmark-level metadata
+- keep subset metadata in payloads when running from a fixed manifest
 
 ## Current Experiment Plan
 
 Near-term tuning priority:
+- use the fixed Spider debug subset at `data/debug/spider_dev_subset_v1.json` for most architecture iterations
+- reserve full Spider dev runs for changes that already look promising on the subset
 - first priority: prototype a `query-sketcher` stage between `decomposer` and `generator`
 - second priority: add an AST-based repair tool inside `refiner`
 - then continue model-stack ablations and retrieval tuning on Spider before promoting changes to BIRD
+
+Spider debug subset policy:
+- current manifest target is `150` examples with `50 simple / 50 moderate / 50 complex`
+- build or refresh via `scripts/build_spider_debug_subset.py`
+- keep the subset fixed and versioned; create `v2` only as a deliberate benchmark change
 
 Few-shot retrieval direction to preserve:
 - index train examples separately from schema-table retrieval
@@ -206,6 +223,7 @@ Query-sketcher direction to preserve:
 - output a compact structured plan rather than full SQL
 - capture tables, join intent, filters, grouping, ordering, and whether subqueries are needed
 - feed the sketch into `generator` as a grounding scaffold, not as an end-user artifact
+- keep the prompt strict about schema grounding and explicit about uncertainty reporting
 
 AST-repair direction to preserve:
 - keep deterministic repairs narrow and reversible

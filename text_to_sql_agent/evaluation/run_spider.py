@@ -22,6 +22,7 @@ from tqdm import tqdm
 from text_to_sql_agent.agents.selector import prewarm_selector_cache
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.evaluation.metrics import BenchmarkMetrics, exact_match
+from text_to_sql_agent.evaluation.spider_debug_subset import load_subset_manifest
 from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import make_initial_state
 from text_to_sql_agent.tools.observability import flush_langfuse
@@ -141,6 +142,7 @@ def _build_payload(
     smoke: bool,
     max_examples: int | None,
     prewarm: bool,
+    subset: dict[str, Any] | None,
     metrics: BenchmarkMetrics,
     predictions: list[dict[str, Any]],
     summary: dict[str, Any],
@@ -153,6 +155,7 @@ def _build_payload(
         "smoke": smoke,
         "max_examples": max_examples,
         "prewarm": prewarm,
+        "subset": subset,
         "status": status,
         "completed_examples": completed_examples if completed_examples is not None else metrics.total,
         "metrics": {
@@ -264,6 +267,61 @@ async def _evaluate_one(
     }
 
 
+def _apply_subset_manifest(
+    *,
+    examples: list[SpiderExample],
+    split: str,
+    subset_manifest_path: Path,
+) -> tuple[list[SpiderExample], dict[str, Any]]:
+    manifest = load_subset_manifest(subset_manifest_path)
+    manifest_split = manifest.get("split")
+    if manifest_split and manifest_split != split:
+        raise ValueError(
+            f"Subset manifest split mismatch: manifest={manifest_split}, requested={split}"
+        )
+
+    selected: list[SpiderExample] = []
+    seen_indices: set[int] = set()
+    for item in manifest["items"]:
+        example_index = int(item["example_index"])
+        if example_index < 0 or example_index >= len(examples):
+            raise IndexError(
+                f"Subset manifest references example_index={example_index}, "
+                f"but split has {len(examples)} examples"
+            )
+        if example_index in seen_indices:
+            raise ValueError(f"Duplicate example_index in subset manifest: {example_index}")
+
+        example = examples[example_index]
+        expected_db_id = item.get("db_id")
+        expected_question = item.get("question")
+        if expected_db_id and example.db_id != expected_db_id:
+            raise ValueError(
+                f"Subset manifest db_id mismatch at index {example_index}: "
+                f"{expected_db_id} != {example.db_id}"
+            )
+        if expected_question and example.question != expected_question:
+            raise ValueError(
+                f"Subset manifest question mismatch at index {example_index}: "
+                f"{expected_question!r} != {example.question!r}"
+            )
+
+        selected.append(example)
+        seen_indices.add(example_index)
+
+    metadata = {
+        "enabled": True,
+        "subset_id": manifest.get("subset_id"),
+        "manifest_path": str(subset_manifest_path),
+        "selection_strategy": manifest.get("selection_strategy"),
+        "requested_examples": len(manifest["items"]),
+        "source_pool_counts": manifest.get("source_pool_counts"),
+        "selected_difficulty_counts": manifest.get("selected_difficulty_counts"),
+        "selected_outcome_counts": manifest.get("selected_outcome_counts"),
+    }
+    return selected, metadata
+
+
 async def run_spider_benchmark(
     *,
     spider_root: Path,
@@ -274,12 +332,22 @@ async def run_spider_benchmark(
     partial_output_path: Path | None = None,
     smoke: bool = False,
     example_timeout_seconds: float | None = None,
+    subset_manifest_path: Path | None = None,
 ) -> tuple[BenchmarkMetrics, list[dict[str, Any]], dict[str, Any]]:
     benchmark_run_id = f"spider-{split}-{uuid4()}"
     graph = build_graph()
     examples = load_spider_examples(spider_root=spider_root, split=split)
+    subset_metadata: dict[str, Any] | None = None
+    if subset_manifest_path is not None:
+        examples, subset_metadata = _apply_subset_manifest(
+            examples=examples,
+            split=split,
+            subset_manifest_path=subset_manifest_path,
+        )
     if max_examples is not None:
         examples = examples[:max_examples]
+    if subset_metadata is not None:
+        subset_metadata["evaluated_examples"] = len(examples)
 
     prewarm_started = time.perf_counter()
     if prewarm:
@@ -373,6 +441,7 @@ async def run_spider_benchmark(
                     smoke=smoke,
                     max_examples=max_examples,
                     prewarm=prewarm,
+                    subset=subset_metadata,
                     metrics=partial_metrics,
                     predictions=partial_predictions,
                     summary=partial_summary,
@@ -421,6 +490,12 @@ def main() -> None:
     parser.add_argument("--prewarm", action="store_true", help="Preload schema cache and vector index before scoring")
     parser.add_argument("--spider-root", type=str, default=settings.spider_root)
     parser.add_argument(
+        "--subset-manifest",
+        type=str,
+        default=None,
+        help="Optional path to a fixed Spider subset manifest for cheap debug runs",
+    )
+    parser.add_argument(
         "--example-timeout-seconds",
         type=float,
         default=None,
@@ -455,14 +530,30 @@ def main() -> None:
             partial_output_path=output_path,
             smoke=args.smoke,
             example_timeout_seconds=example_timeout_seconds,
+            subset_manifest_path=Path(args.subset_manifest) if args.subset_manifest else None,
         )
     )
+    subset_payload = None
+    if args.subset_manifest:
+        subset_payload = load_subset_manifest(Path(args.subset_manifest))
+        subset_payload = {
+            "enabled": True,
+            "subset_id": subset_payload.get("subset_id"),
+            "manifest_path": args.subset_manifest,
+            "selection_strategy": subset_payload.get("selection_strategy"),
+            "requested_examples": len(subset_payload["items"]),
+            "source_pool_counts": subset_payload.get("source_pool_counts"),
+            "selected_difficulty_counts": subset_payload.get("selected_difficulty_counts"),
+            "selected_outcome_counts": subset_payload.get("selected_outcome_counts"),
+            "evaluated_examples": metrics.total,
+        }
     payload = _build_payload(
         split=args.split,
         spider_root=spider_root,
         smoke=args.smoke,
         max_examples=max_examples,
         prewarm=args.prewarm,
+        subset=subset_payload,
         metrics=metrics,
         predictions=predictions,
         summary=summary,
@@ -476,6 +567,8 @@ def main() -> None:
     print(f"  Total: {metrics.total}")
     print(f"  EX: {metrics.execution_accuracy:.4f}")
     print(f"  EM: {metrics.exact_match:.4f}")
+    if subset_payload:
+        print(f"  Subset: {subset_payload['subset_id']} ({subset_payload['evaluated_examples']} examples)")
     print(f"  Prewarm: {summary['prewarm_time_s']:.2f}s")
     print(f"  Eval: {summary['eval_time_s']:.2f}s")
     print(f"  Avg/example: {summary['avg_time_per_example_s']:.2f}s")

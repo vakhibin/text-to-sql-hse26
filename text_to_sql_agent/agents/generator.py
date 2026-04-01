@@ -69,6 +69,7 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 filtered_schema=state.get("filtered_schema", ""),
                 complexity=state.get("complexity", "unknown"),
                 sub_questions=state.get("sub_questions", []),
+                query_sketch_text=state.get("query_sketch_text", ""),
                 few_shot_examples=examples,
             )
             response = await router.ainvoke_with_metadata(

@@ -12,6 +12,7 @@ def build_generator_prompt(
     filtered_schema: str,
     complexity: str,
     sub_questions: list[str],
+    query_sketch_text: str,
     few_shot_examples: list[dict[str, str]],
 ) -> str:
     """Build SQL generation prompt with optional few-shot examples."""
@@ -32,6 +33,8 @@ def build_generator_prompt(
     else:
         sub_questions_block = "- (none)"
 
+    query_sketch_block = query_sketch_text.strip() if query_sketch_text.strip() else "- (none)"
+
     return f"""
 You are an expert SQLite SQL generator.
 Return ONLY SQL without markdown, explanations, or comments.
@@ -45,6 +48,9 @@ Complexity:
 Decomposition hints:
 {sub_questions_block}
 
+Query sketch:
+{query_sketch_block}
+
 mSchema:
 {filtered_schema}
 
@@ -56,7 +62,8 @@ mSchema:
 5) If the question uses synonyms or informal wording, map them to the closest schema items that actually exist. Never rename schema identifiers to match the wording of the question.
 6) Do not invent missing derived columns or guessed identifiers. If a column/table is not explicitly present in the schema, do not use it.
 7) When uncertain between natural-language wording and schema naming, trust the schema naming.
-8) End query with semicolon.
+8) Treat the query sketch as a planning scaffold: follow it when it is compatible with the schema and question, but trust the schema over the sketch if they conflict.
+9) End query with semicolon.
 
 SQL:
 """.strip()

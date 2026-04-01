@@ -7,6 +7,7 @@ from text_to_sql_agent.agents.decomposer import run_decomposer
 from text_to_sql_agent.agents.execution_filter import run_execution_filter
 from text_to_sql_agent.agents.generator import run_generator
 from text_to_sql_agent.agents.judge import run_judge
+from text_to_sql_agent.agents.query_sketcher import run_query_sketcher
 from text_to_sql_agent.agents.refiner import run_refiner
 from text_to_sql_agent.agents.selector import run_selector
 from text_to_sql_agent.graph.state import SQLAgentState
@@ -57,6 +58,7 @@ def build_graph():
 
     graph.add_node("selector", run_selector)
     graph.add_node("decomposer", run_decomposer)
+    graph.add_node("sketcher", run_query_sketcher)
     graph.add_node("generator", run_generator)
     graph.add_node("execution_filter", run_execution_filter)
     graph.add_node("judge", run_judge)
@@ -68,7 +70,8 @@ def build_graph():
         _route_after_selector,
         {"decomposer": "decomposer", "finish": END},
     )
-    graph.add_edge("decomposer", "generator")
+    graph.add_edge("decomposer", "sketcher")
+    graph.add_edge("sketcher", "generator")
     graph.add_conditional_edges(
         "generator",
         _route_after_generator,

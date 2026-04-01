@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal, Optional, TypedDict
 from uuid import uuid4
 
-StageName = Literal["selector", "decomposer", "generator", "execution_filter", "judge", "refiner"]
+StageName = Literal["selector", "decomposer", "sketcher", "generator", "execution_filter", "judge", "refiner"]
 StageRunStatus = Literal["pending", "running", "success", "failed", "skipped"]
 ComplexityLevel = Literal["simple", "moderate", "complex", "unknown"]
 
@@ -27,6 +27,8 @@ class SQLAgentState(TypedDict):
     # Decomposer
     complexity: ComplexityLevel
     sub_questions: list[str]
+    query_sketch: dict[str, Any]
+    query_sketch_text: str
 
     # Generator
     candidates: list[str]
@@ -67,6 +69,10 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
         "required_fields": ("complexity", "sub_questions", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
     },
+    "sketcher": {
+        "required_fields": ("query_sketch", "query_sketch_text", "stage_status"),
+        "optional_fields": ("warnings", "stage_timings"),
+    },
     "generator": {
         "required_fields": ("candidates", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
@@ -91,6 +97,7 @@ def default_stage_status() -> dict[StageName, StageRunStatus]:
     return {
         "selector": "pending",
         "decomposer": "pending",
+        "sketcher": "pending",
         "generator": "pending",
         "execution_filter": "pending",
         "judge": "pending",
@@ -103,6 +110,7 @@ def default_stage_timings() -> dict[StageName, float]:
     return {
         "selector": 0.0,
         "decomposer": 0.0,
+        "sketcher": 0.0,
         "generator": 0.0,
         "execution_filter": 0.0,
         "judge": 0.0,
@@ -129,6 +137,8 @@ def make_initial_state(
         "retrieved_schema_context": "",
         "complexity": "unknown",
         "sub_questions": [],
+        "query_sketch": {},
+        "query_sketch_text": "",
         "candidates": [],
         "valid_candidates": [],
         "best_sql": "",
