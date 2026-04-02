@@ -57,13 +57,16 @@ mSchema:
 {few_shot_block}Rules:
 1) Use ONLY the tables and columns listed in the mSchema above. Do NOT invent or assume tables/columns that are not explicitly listed.
 2) Use SQLite-compatible SQL.
-3) Prefer explicit JOINs with ON clauses.
+3) Prefer explicit JOINs with ON clauses when a join is actually needed.
 4) Include all required filters from the question.
 5) If the question uses synonyms or informal wording, map them to the closest schema items that actually exist. Never rename schema identifiers to match the wording of the question.
 6) Do not invent missing derived columns or guessed identifiers. If a column/table is not explicitly present in the schema, do not use it.
 7) When uncertain between natural-language wording and schema naming, trust the schema naming.
 8) Treat the query sketch as a planning scaffold: follow it when it is compatible with the schema and question, but trust the schema over the sketch if they conflict.
-9) End query with semicolon.
+9) Preserve the SELECT column order to match the order requested in the question unless the question explicitly asks for a different output order.
+10) Prefer the simplest valid query shape. If one table already contains the needed fields and filters, do NOT add extra JOINs.
+11) Do not join extra tables only to make the SQL look more relational or more similar to a benchmark gold query.
+12) End query with semicolon.
 
 SQL:
 """.strip()

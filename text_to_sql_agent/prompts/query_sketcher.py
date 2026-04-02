@@ -53,10 +53,13 @@ Primary selected schema:
 - Never invent identifiers, aliases like `T1`/`T2`, or derived columns.
 - If uncertain, leave the relevant list short or empty and record the uncertainty in `ambiguities` or `risks`.
 - Order `candidate_tables` from most likely to least likely.
+- Preserve the output column order implied by the question wording whenever the question names multiple fields.
 - Keep `candidate_tables` to at most 4 items.
 - Keep `join_plan` to at most 3 items.
 - Keep `generation_hints` to 3-6 short items.
 - `join_plan` should be empty when no join is clearly needed.
+- Prefer the simplest query shape that can answer the question correctly.
+- Do not recommend a join when one selected table already contains the requested fields and filters.
 - `subquery_needed` should be true only when nesting, set operations, exclusion, or comparison to aggregate values is likely required.
 - Use lowercase JSON booleans: `true` / `false`.
 - Use double-quoted JSON strings.
