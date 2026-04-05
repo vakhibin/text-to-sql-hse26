@@ -9,6 +9,10 @@ from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.refiner import build_refiner_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
+from text_to_sql_agent.tools.sql_candidate_analysis import (
+    analyze_sql_candidate,
+    summarize_candidate_analysis,
+)
 from text_to_sql_agent.tools.sql_schema_validator import validate_sql_schema_references
 from text_to_sql_agent.tools.sql_executor import execute_sql
 
@@ -65,6 +69,25 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             "total_cost_usd": total_cost_usd,
         }
 
+    selected_candidate_diagnostic = dict(state.get("selected_candidate_diagnostic", {}))
+    selected_candidate_summary = str(
+        selected_candidate_diagnostic.get("analysis_summary")
+        or summarize_candidate_analysis(analyze_sql_candidate(current_sql))
+    )
+    judge_issues = list(state.get("judge_issues", []))
+    failed_candidate_summaries = [
+        f"candidate {item.get('candidate_index', '-')}: "
+        f"execution_error={item.get('execution_error', '-')} | "
+        f"schema_errors={item.get('schema_errors', [])} | "
+        f"schema_warnings={item.get('schema_warnings', [])} | "
+        f"{item.get('analysis_summary', '-')}"
+        for item in state.get("candidate_diagnostics", [])
+        if (
+            not bool(item.get("execution_success"))
+            or not bool(item.get("schema_valid", True))
+        )
+    ][:3]
+
     validation = validate_sql_schema_references(current_sql, state.get("full_schema", {}))
     if validation.warnings:
         warnings.append(validation.warning_message())
@@ -80,13 +103,17 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
         )
         execution_error = execution.error or "Unknown execution error."
 
-    if execution and execution.success:
+    should_attempt_refine = execution is None or not execution.success
+
+    if execution and execution.success and not should_attempt_refine:
         stage_status["refiner"] = "success"
         return {
             **state,
             "final_sql": current_sql,
             "execution_result": str(execution.rows),
             "error_message": None,
+            "judge_needs_refine": False,
+            "judge_issues": [],
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,
@@ -97,17 +124,28 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             "total_cost_usd": total_cost_usd,
         }
 
-    # Execution failed: prepare one refinement step.
+    # Prepare one refinement step after schema validation or execution failure.
     attempts = int(state.get("refine_attempts", 0)) + 1
     next_sql = current_sql
+    refine_trigger = execution_error
 
     try:
         prompt = build_refiner_prompt(
             question=state.get("question", ""),
+            evidence=state.get("evidence"),
             filtered_schema=state.get("filtered_schema", ""),
             retrieved_schema_context=state.get("retrieved_schema_context", ""),
+            sub_questions=state.get("sub_questions", []),
+            query_sketch_text=state.get("query_sketch_text", ""),
             failed_sql=current_sql,
-            execution_error=execution_error,
+            execution_error=refine_trigger,
+            judge_reasoning=state.get("judge_reasoning", ""),
+            judge_confidence=state.get("judge_confidence", "unknown"),
+            judge_issues=judge_issues,
+            validation_errors=validation.errors,
+            validation_warnings=validation.warnings,
+            selected_candidate_summary=selected_candidate_summary,
+            failed_candidate_summaries=failed_candidate_summaries,
         )
         router = LLMRouter()
         response = await router.ainvoke_with_metadata(
@@ -134,7 +172,9 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
         "final_sql": next_sql,
         "execution_result": None,
         "refine_attempts": attempts,
-        "error_message": execution_error,
+        "error_message": refine_trigger,
+        "judge_needs_refine": False,
+        "judge_issues": [],
         "stage_status": stage_status,
         "stage_timings": {
             **stage_timings,

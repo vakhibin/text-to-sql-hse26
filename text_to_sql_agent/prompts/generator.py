@@ -9,9 +9,11 @@ Output only SQL.
 def build_generator_prompt(
     *,
     question: str,
+    evidence: str | None,
     filtered_schema: str,
     complexity: str,
     sub_questions: list[str],
+    decomposition_risk_flags: dict[str, object],
     query_sketch_text: str,
     few_shot_examples: list[dict[str, str]],
 ) -> str:
@@ -34,6 +36,10 @@ def build_generator_prompt(
         sub_questions_block = "- (none)"
 
     query_sketch_block = query_sketch_text.strip() if query_sketch_text.strip() else "- (none)"
+    evidence_block = evidence.strip() if evidence and evidence.strip() else "- (none)"
+    risk_flags_block = ", ".join(
+        f"{key}={value}" for key, value in decomposition_risk_flags.items()
+    ) or "- (none)"
 
     return f"""
 You are an expert SQLite SQL generator.
@@ -47,6 +53,12 @@ Complexity:
 
 Decomposition hints:
 {sub_questions_block}
+
+Evidence:
+{evidence_block}
+
+Routing risk flags:
+{risk_flags_block}
 
 Query sketch:
 {query_sketch_block}
@@ -64,9 +76,12 @@ mSchema:
 7) When uncertain between natural-language wording and schema naming, trust the schema naming.
 8) Treat the query sketch as a planning scaffold: follow it when it is compatible with the schema and question, but trust the schema over the sketch if they conflict.
 9) Preserve the SELECT column order to match the order requested in the question unless the question explicitly asks for a different output order.
-10) Prefer the simplest valid query shape. If one table already contains the needed fields and filters, do NOT add extra JOINs.
-11) Do not join extra tables only to make the SQL look more relational or more similar to a benchmark gold query.
-12) End query with semicolon.
+10) Match the output shape implied by the question. Do not add extra projected columns, and do not drop requested columns.
+11) Prefer the simplest valid query shape. If one table already contains the needed fields and filters, do NOT add extra JOINs.
+12) Do not join extra tables only to make the SQL look more relational or more similar to a benchmark gold query.
+13) Preserve literal values faithfully. If the question or evidence provides an exact string/code/value, keep that value instead of normalizing or paraphrasing it.
+14) When `literal_filter_risk=true`, be extra careful with literal spelling, spacing, casing, and code values.
+15) End query with semicolon.
 
 SQL:
 """.strip()

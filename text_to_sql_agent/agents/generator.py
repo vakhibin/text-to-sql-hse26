@@ -66,9 +66,11 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
             )
             prompt = build_generator_prompt(
                 question=state["question"],
+                evidence=state.get("evidence"),
                 filtered_schema=state.get("filtered_schema", ""),
                 complexity=state.get("complexity", "unknown"),
                 sub_questions=state.get("sub_questions", []),
+                decomposition_risk_flags=state.get("decomposition_risk_flags", {}),
                 query_sketch_text=state.get("query_sketch_text", ""),
                 few_shot_examples=examples,
             )

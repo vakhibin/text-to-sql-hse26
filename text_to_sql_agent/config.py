@@ -40,6 +40,8 @@ class AgentSettings(BaseSettings):
     moderate_primary_calls: int = 2
     moderate_secondary_calls: int = 0
     simple_skip_judge_when_valid: bool = True
+    simple_skip_judge_require_single_table: bool = True
+    simple_skip_judge_max_projection_width: int = 2
     few_shot_examples_per_candidate: int = 2
     few_shot_max_pool_size: int = 3000
     few_shot_seed: int = 42

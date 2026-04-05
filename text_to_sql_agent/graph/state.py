@@ -27,16 +27,23 @@ class SQLAgentState(TypedDict):
     # Decomposer
     complexity: ComplexityLevel
     sub_questions: list[str]
+    decomposition_reasoning: str
+    decomposition_risk_flags: dict[str, Any]
     query_sketch: dict[str, Any]
     query_sketch_text: str
 
     # Generator
     candidates: list[str]
     valid_candidates: list[str]
+    candidate_diagnostics: list[dict[str, Any]]
 
     # Judge
     best_sql: str
     judge_reasoning: str
+    judge_confidence: str
+    judge_needs_refine: bool
+    judge_issues: list[str]
+    selected_candidate_diagnostic: dict[str, Any]
 
     # Refiner
     final_sql: str
@@ -67,7 +74,7 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
     },
     "decomposer": {
         "required_fields": ("complexity", "sub_questions", "stage_status"),
-        "optional_fields": ("warnings", "stage_timings"),
+        "optional_fields": ("warnings", "stage_timings", "decomposition_reasoning", "decomposition_risk_flags"),
     },
     "sketcher": {
         "required_fields": ("query_sketch", "query_sketch_text", "stage_status"),
@@ -79,11 +86,18 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
     },
     "execution_filter": {
         "required_fields": ("valid_candidates", "stage_status"),
-        "optional_fields": ("warnings", "stage_timings", "error_message"),
+        "optional_fields": ("warnings", "stage_timings", "error_message", "candidate_diagnostics"),
     },
     "judge": {
         "required_fields": ("best_sql", "judge_reasoning", "stage_status"),
-        "optional_fields": ("warnings", "stage_timings"),
+        "optional_fields": (
+            "warnings",
+            "stage_timings",
+            "judge_confidence",
+            "judge_needs_refine",
+            "judge_issues",
+            "selected_candidate_diagnostic",
+        ),
     },
     "refiner": {
         "required_fields": ("final_sql", "execution_result", "refine_attempts", "stage_status"),
@@ -137,12 +151,19 @@ def make_initial_state(
         "retrieved_schema_context": "",
         "complexity": "unknown",
         "sub_questions": [],
+        "decomposition_reasoning": "",
+        "decomposition_risk_flags": {},
         "query_sketch": {},
         "query_sketch_text": "",
         "candidates": [],
         "valid_candidates": [],
+        "candidate_diagnostics": [],
         "best_sql": "",
         "judge_reasoning": "",
+        "judge_confidence": "unknown",
+        "judge_needs_refine": False,
+        "judge_issues": [],
+        "selected_candidate_diagnostic": {},
         "final_sql": "",
         "execution_result": None,
         "refine_attempts": 0,
