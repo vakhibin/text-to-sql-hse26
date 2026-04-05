@@ -164,7 +164,7 @@ Current few-shot status:
 
 Evaluation metrics (`text_to_sql_agent/evaluation/metrics.py`):
 - EX uses official Spider `result_eq`: column permutation search + multiset bag semantics + ORDER BY awareness
-- EM is still naive string comparison (to be upgraded to AST-based official Spider EM)
+- EM uses AST-based normalization via `sqlglot`: alias resolution → table-name substitution → single-table qualifier stripping → lowercase canonical SQL comparison, with string fallback
 
 Planned architectural follow-ups:
 - `ast-repair` tool: use SQL AST-based deterministic repair inside `refiner` for obvious table/column/qualification fixes
@@ -215,23 +215,55 @@ When editing runners:
 
 ## Current Results (baseline for future changes)
 
-Spider v1 debug subset (`data/debug/spider_dev_subset_v1.json`, 150 examples):
+### Full Spider v1 dev (1034 examples)
+
+| Date | EX | EM | Errors | Avg time | Cost | Notes |
+|------|----|----|--------|----------|------|-------|
+| 2026-04-05 | **72.92%** | **29.11%** | 24 (2.3%) | 4.49s/q | $67.78 | official EX + AST EM, full pipeline |
+| baseline | 64.22% | ~21% | 45 (4.4%) | 15.27s/q | — | gpt-oss-120b single generator |
+
+Improvement over baseline: **+8.7 ppt EX, +8 ppt EM, 2x fewer errors, 3.4x faster**.
+
+### Debug subset v1 (150 examples)
 
 | Date | EX | EM | Eval method | Generator primary | Generator secondary | Notes |
 |------|----|----|-------------|-------------------|---------------------|-------|
-| 2026-04-05 | **80.0%** | 20.7% | official Spider `result_eq` | gemini-2.5-pro | gpt-oss-120b | lean judge + prompt tuning + official metrics |
-| 2026-04-05 | 73.3% | — | official `result_eq` (reeval of old run) | gemini-2.5-pro | gpt-oss-120b | same model, before prompt tuning |
+| 2026-04-05 | **80.0%** | **40.7%** | official EX + AST EM | gemini-2.5-pro | gpt-oss-120b | lean judge + prompt tuning + official EX + AST EM |
+| 2026-04-05 | 73.3% | — | official EX (reeval of old run) | gemini-2.5-pro | gpt-oss-120b | same model, before prompt tuning |
 | 2026-04-05 | 67.3% | 19.3% | naive `==` | gemini-2.5-pro | gpt-oss-120b | old metrics, same pipeline |
-| 2026-04-01 | 68.0% | — | naive `==` | gemini-2.5-pro | gpt-oss-120b | pre-judge/refiner enrichment |
 
-Key changes that drove 67% → 80%:
-- **+6 ppt**: switched to official Spider `result_eq` (column permutation, multiset row comparison)
-- **+3 ppt**: lean judge prompt (removed sketch/risk-flags/sub-questions/diffs/rejected from judge context)
-- **+2 ppt**: generator prompt hardening (SELECT *, no unnecessary JOIN, projection order)
-- **+2 ppt**: soft cheap-path + refusal SQL guardrail
+Key changes that drove improvement:
+- **+6 ppt EX**: switched to official Spider `result_eq` (column permutation, multiset row comparison)
+- **+3 ppt EX**: lean judge prompt (removed sketch/risk-flags/sub-questions/diffs/rejected from judge context)
+- **+2 ppt EX**: generator prompt hardening (SELECT *, no unnecessary JOIN, projection order)
+- **+2 ppt EX**: soft cheap-path + refusal SQL guardrail
+- **+8 ppt EM**: AST-based `_canonical_sql()` via `sqlglot` (alias resolution, single-table qualifier stripping, lowercase canonicalization)
 
 Config: `NUM_CANDIDATES=5`, `PRIMARY_CALLS=3`, `SECONDARY_CALLS=2`, judge=`gpt-4.1`, sketcher=`gemini-2.5-pro`.
-Cost: ~$9.4 per 150-example run. Avg 5.5s/example at concurrency 12.
+Cost: ~$9.4 per 150-example debug run, ~$68 per full 1034-example run. Avg 4.5s/example at concurrency 12.
+
+## Pipeline Stability Assessment
+
+Analysis based on 4+ healthy debug-v1 runs (150 examples each, error rate < 5%):
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Deterministic core (always pass) | 95/150 (63%) | These examples pass in every run |
+| Deterministic fail (always fail) | 27/150 (18%) | These examples fail in every run |
+| Flaky (nondeterministic) | 28/150 (19%) | Pass in some runs, fail in others |
+| EX floor | ~63% | Only deterministic passes |
+| EX ceiling | ~82% | Deterministic + all flaky pass |
+| SQL prediction stability | ~50% | Only half of predictions are identical across back-to-back runs |
+| Error rate (latest) | 0.7% (1/150) | Very stable infrastructure |
+
+Nondeterminism is inherent in the LLM ensemble (temperature > 0, multiple generators).
+Variance band: **~5-8 ppt** between runs from LLM randomness alone.
+
+Full Spider (1034 examples) actual:
+- Time: 1:17:24 at concurrency 12
+- Cost: $67.78
+- Avg: 4.49s/example
+- Errors: 24 (2.3%)
 
 ## Iterative Improvement Workflow
 
