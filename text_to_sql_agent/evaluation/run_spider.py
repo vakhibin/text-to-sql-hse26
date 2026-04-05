@@ -21,7 +21,11 @@ from tqdm import tqdm
 
 from text_to_sql_agent.agents.selector import prewarm_selector_cache
 from text_to_sql_agent.config import settings
-from text_to_sql_agent.evaluation.metrics import BenchmarkMetrics, exact_match
+from text_to_sql_agent.evaluation.metrics import (
+    BenchmarkMetrics,
+    exact_match,
+    execution_match as official_execution_match,
+)
 from text_to_sql_agent.evaluation.spider_debug_subset import load_subset_manifest
 from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import make_initial_state
@@ -262,18 +266,22 @@ async def _evaluate_one(
     pred_exec = await execute_sql(str(db_path), predicted_sql) if predicted_sql else None
     gold_exec = await execute_sql(str(db_path), example.query)
 
-    execution_match = (
+    exec_match = (
         pred_exec is not None
         and pred_exec.success
         and gold_exec.success
-        and (pred_exec.rows or []) == (gold_exec.rows or [])
+        and official_execution_match(
+            pred_exec.rows,
+            gold_exec.rows,
+            gold_sql=example.query,
+        )
     )
     return {
         "db_id": example.db_id,
         "question": example.question,
         "predicted_sql": predicted_sql,
         "gold_sql": example.query,
-        "execution_match": bool(execution_match),
+        "execution_match": bool(exec_match),
         "exact_match": exact_match(predicted_sql, example.query),
         "error_message": result.get("error_message"),
         "warnings": result.get("warnings", []),

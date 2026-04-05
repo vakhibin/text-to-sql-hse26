@@ -17,7 +17,10 @@ from tqdm import tqdm
 
 from text_to_sql_agent.agents.selector import prewarm_selector_cache
 from text_to_sql_agent.config import settings
-from text_to_sql_agent.evaluation.metrics import BenchmarkMetrics
+from text_to_sql_agent.evaluation.metrics import (
+    BenchmarkMetrics,
+    execution_match as official_execution_match,
+)
 from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import make_initial_state
 from text_to_sql_agent.tools.observability import flush_langfuse
@@ -177,8 +180,11 @@ async def _evaluate_one(
         pred_exec is not None
         and pred_exec.success
         and gold_exec.success
-        and {_freeze_row(row) for row in (pred_exec.rows or [])}
-        == {_freeze_row(row) for row in (gold_exec.rows or [])}
+        and official_execution_match(
+            pred_exec.rows,
+            gold_exec.rows,
+            gold_sql=example.gold_sql,
+        )
     )
 
     return {
