@@ -139,16 +139,16 @@ Current few-shot status:
 `text_to_sql_agent/agents/execution_filter.py`:
 - executes generated SQL
 - drops invalid candidates before judging
-- can promote the first valid candidate directly to `best_sql` for `simple` queries
+- includes refusal-SQL guardrail (`_is_refusal_sql`) to detect LLM refusals wrapped as `SELECT 'I cannot...'`
+- collects structural diagnostics per candidate via `sql_candidate_analysis`
+- can promote the best valid candidate directly to `best_sql` for `simple` queries (soft cheap-path based on SQL structure, not LLM risk flags)
 
 `text_to_sql_agent/agents/judge.py`:
-- selects best candidate
+- selects best candidate from a lean prompt: question + evidence + schema + compact candidate SQL with structural summaries
 - should degrade gracefully on parse/provider failures
 - may be skipped on the simple-query cheap path
-- next hardening target:
-  - give judge richer candidate context, not just raw SQL
-  - include schema context, execution outcomes, validation warnings, and compact candidate differences
-  - benchmark whether a stronger judge model improves selection enough to justify cost
+- outputs structured signals: `confidence`, `needs_refine`, `issues` (from a fixed vocabulary)
+- lesson learned: overloading judge with sketch/risk-flags/diffs/rejected candidates hurts selection quality — keep it lean
 
 `text_to_sql_agent/agents/refiner.py`:
 - retries SQL correction using execution feedback
@@ -162,9 +162,14 @@ Current few-shot status:
 - validates qualified and unqualified column references against available sources
 - can surface deterministic schema errors to the refiner before the query reaches SQLite
 
+Evaluation metrics (`text_to_sql_agent/evaluation/metrics.py`):
+- EX uses official Spider `result_eq`: column permutation search + multiset bag semantics + ORDER BY awareness
+- EM is still naive string comparison (to be upgraded to AST-based official Spider EM)
+
 Planned architectural follow-ups:
-- `query-sketcher`: add an explicit query-plan stage before SQL generation
 - `ast-repair` tool: use SQL AST-based deterministic repair inside `refiner` for obvious table/column/qualification fixes
+- `self-consistency voting`: pick candidate by majority execution result instead of LLM judge
+- `value linking`: look up actual DB values before generation to fix literal casing/spelling
 
 ## Cost And Observability
 
@@ -208,15 +213,46 @@ When editing runners:
 - do not silently remove benchmark-level metadata
 - keep subset metadata in payloads when running from a fixed manifest
 
+## Current Results (baseline for future changes)
+
+Spider v1 debug subset (`data/debug/spider_dev_subset_v1.json`, 150 examples):
+
+| Date | EX | EM | Eval method | Generator primary | Generator secondary | Notes |
+|------|----|----|-------------|-------------------|---------------------|-------|
+| 2026-04-05 | **80.0%** | 20.7% | official Spider `result_eq` | gemini-2.5-pro | gpt-oss-120b | lean judge + prompt tuning + official metrics |
+| 2026-04-05 | 73.3% | — | official `result_eq` (reeval of old run) | gemini-2.5-pro | gpt-oss-120b | same model, before prompt tuning |
+| 2026-04-05 | 67.3% | 19.3% | naive `==` | gemini-2.5-pro | gpt-oss-120b | old metrics, same pipeline |
+| 2026-04-01 | 68.0% | — | naive `==` | gemini-2.5-pro | gpt-oss-120b | pre-judge/refiner enrichment |
+
+Key changes that drove 67% → 80%:
+- **+6 ppt**: switched to official Spider `result_eq` (column permutation, multiset row comparison)
+- **+3 ppt**: lean judge prompt (removed sketch/risk-flags/sub-questions/diffs/rejected from judge context)
+- **+2 ppt**: generator prompt hardening (SELECT *, no unnecessary JOIN, projection order)
+- **+2 ppt**: soft cheap-path + refusal SQL guardrail
+
+Config: `NUM_CANDIDATES=5`, `PRIMARY_CALLS=3`, `SECONDARY_CALLS=2`, judge=`gpt-4.1`, sketcher=`gemini-2.5-pro`.
+Cost: ~$9.4 per 150-example run. Avg 5.5s/example at concurrency 12.
+
+## Iterative Improvement Workflow
+
+1. Run full v1 subset (150 examples) → establish baseline EX
+2. Build failure subset from results: `data/debug/spider_v1_failures.json`
+3. Apply targeted fixes (prompt tuning, routing, guardrails)
+4. Test on failure subset (~50 examples, ~$1-1.5, ~3 min)
+5. When failure subset improves, re-run full v1 to check for regressions
+6. When v1 EX is stable, run full Spider (1034) for final number
+
+Do not optimize to the failure subset — use it as a diagnostic tool only.
+
 ## Current Experiment Plan
 
 Near-term tuning priority:
 - use the fixed Spider debug subset at `data/debug/spider_dev_subset_v1.json` for most architecture iterations
+- use `data/debug/spider_v1_failures.json` (49 examples) for cheap targeted iteration
 - reserve full Spider dev runs for changes that already look promising on the subset
-- first priority: prototype a `query-sketcher` stage between `decomposer` and `generator`
-- second priority: add an AST-based repair tool inside `refiner`
-- next priority after sketch/refiner stabilization: harden `judge` and generator prompts
-- then continue model-stack ablations and retrieval tuning on Spider before promoting changes to BIRD
+- next priorities: semantic few-shot retrieval, self-consistency voting, value linking
+- then continue model-stack ablations (Gemma 4 on secondary, etc.) and EM hardening
+- promote changes to BIRD only after Spider EX is stable
 
 Spider debug subset policy:
 - current manifest target is `150` examples with `50 simple / 50 moderate / 50 complex`
