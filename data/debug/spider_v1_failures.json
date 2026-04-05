@@ -1,0 +1,409 @@
+{
+  "benchmark": "spider_v1",
+  "subset_id": "spider-debug-v1-failures",
+  "split": "dev",
+  "spider_root": "databases/spider",
+  "selection_strategy": "failures_from_v1_run_20260405",
+  "source_run": "outputs/spider_v1_results_20260405_205203.json",
+  "source_subset": "spider-debug-v1",
+  "total_examples": 49,
+  "difficulty_counts": {
+    "complex": 22,
+    "moderate": 13,
+    "simple": 14
+  },
+  "items": [
+    {
+      "example_index": 65,
+      "db_id": "pets_1",
+      "question": "Find the first name and age of students who have a dog but do not have a cat as a pet.",
+      "gold_sql": "SELECT T1.fname ,  T1.age FROM student AS T1 JOIN has_pet AS T2 ON T1.stuid  =  T2.stuid JOIN pets AS T3 ON T3.petid  =  T2.petid WHERE T3.pettype  =  'dog' AND T1.stuid NOT IN (SELECT T1.stuid FROM student AS T1 JOIN has_pet AS T2 ON T1.stuid  =  T2.stuid JOIN pets AS T3 ON T3.petid  =  T2.petid WHERE T3.pettype  =  'cat')",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 73,
+      "db_id": "pets_1",
+      "question": "Find the average weight for each pet type.",
+      "gold_sql": "SELECT avg(weight) ,  pettype FROM pets GROUP BY pettype",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 102,
+      "db_id": "car_1",
+      "question": "What is the maker of the carr produced in the earliest year and what year was it?",
+      "gold_sql": "SELECT T2.Make ,  T1.Year FROM CARS_DATA AS T1 JOIN CAR_NAMES AS T2 ON T1.Id  =  T2.MakeId WHERE T1.Year  =  (SELECT min(YEAR) FROM CARS_DATA);",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 104,
+      "db_id": "car_1",
+      "question": "What are the different models for the cards produced after 1980?",
+      "gold_sql": "SELECT DISTINCT T1.model FROM MODEL_LIST AS T1 JOIN CAR_NAMES AS T2 ON T1.model  =  T2.model JOIN CARS_DATA AS T3 ON T2.MakeId  =  T3.id WHERE T3.year  >  1980;",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 114,
+      "db_id": "car_1",
+      "question": "What is the number of makers of care in France?",
+      "gold_sql": "SELECT count(*) FROM CAR_MAKERS AS T1 JOIN COUNTRIES AS T2 ON T1.Country  =  T2.CountryId WHERE T2.CountryName  =  'france';",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 121,
+      "db_id": "car_1",
+      "question": "What are all the makers and models?",
+      "gold_sql": "SELECT Maker ,  Model FROM MODEL_LIST;",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 122,
+      "db_id": "car_1",
+      "question": "What are the makers and models?",
+      "gold_sql": "SELECT Maker ,  Model FROM MODEL_LIST;",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 129,
+      "db_id": "car_1",
+      "question": "Which countries in europe have at least 3 car manufacturers?",
+      "gold_sql": "SELECT T1.CountryName FROM COUNTRIES AS T1 JOIN CONTINENTS AS T2 ON T1.Continent  =  T2.ContId JOIN CAR_MAKERS AS T3 ON T1.CountryId  =  T3.Country WHERE T2.Continent  =  'europe' GROUP BY T1.CountryName HAVING count(*)  >=  3;",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 227,
+      "db_id": "flight_2",
+      "question": "What is the code of airport that has fewest number of flights?",
+      "gold_sql": "SELECT T1.AirportCode FROM AIRPORTS AS T1 JOIN FLIGHTS AS T2 ON T1.AirportCode  =  T2.DestAirport OR T1.AirportCode  =  T2.SourceAirport GROUP BY T1.AirportCode ORDER BY count(*) LIMIT 1",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 239,
+      "db_id": "flight_2",
+      "question": "Find all airlines that have flights from airport 'CVO' but not from 'APG'.",
+      "gold_sql": "SELECT T1.Airline FROM AIRLINES AS T1 JOIN FLIGHTS AS T2 ON T1.uid  =  T2.Airline WHERE T2.SourceAirport  =  \"CVO\" EXCEPT SELECT T1.Airline FROM AIRLINES AS T1 JOIN FLIGHTS AS T2 ON T1.uid  =  T2.Airline WHERE T2.SourceAirport  =  \"APG\"",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 287,
+      "db_id": "employee_hire_evaluation",
+      "question": "Find the number of employees hired in each shop; show the shop name as well.",
+      "gold_sql": "SELECT count(*) ,  t2.name FROM hiring AS t1 JOIN shop AS t2 ON t1.shop_id  =  t2.shop_id GROUP BY t2.name",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 291,
+      "db_id": "employee_hire_evaluation",
+      "question": "Give me all the information about hiring.",
+      "gold_sql": "SELECT * FROM hiring",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 292,
+      "db_id": "employee_hire_evaluation",
+      "question": "What is all the information about hiring?",
+      "gold_sql": "SELECT * FROM hiring",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 367,
+      "db_id": "cre_Doc_Template_Mgt",
+      "question": "Show all document ids and the number of paragraphs in each document. Order by document id.",
+      "gold_sql": "SELECT document_id ,  count(*) FROM Paragraphs GROUP BY document_id ORDER BY document_id",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 380,
+      "db_id": "cre_Doc_Template_Mgt",
+      "question": "What are the ids of documents that contain the paragraph text 'Brazil' and 'Ireland'?",
+      "gold_sql": "SELECT document_id FROM Paragraphs WHERE paragraph_text  =  'Brazil' INTERSECT SELECT document_id FROM Paragraphs WHERE paragraph_text  =  'Ireland'",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 387,
+      "db_id": "course_teach",
+      "question": "List the name of teachers whose hometown is not \"Little Lever Urban District\".",
+      "gold_sql": "SELECT Name FROM teacher WHERE Hometown != \"Little Lever Urban Distric\"",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 406,
+      "db_id": "course_teach",
+      "question": "What are the names of the teachers and how many courses do they teach?",
+      "gold_sql": "SELECT T2.Name ,  COUNT(*) FROM course_arrange AS T1 JOIN teacher AS T2 ON T1.Teacher_ID  =  T2.Teacher_ID GROUP BY T2.Name",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 410,
+      "db_id": "course_teach",
+      "question": "What are the names of the teachers whose courses have not been arranged?",
+      "gold_sql": "SELECT Name FROM teacher WHERE Teacher_id NOT IN (SELECT Teacher_id FROM course_arrange)",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 417,
+      "db_id": "museum_visit",
+      "question": "What are the opening year and staff number of the museum named Plaza Museum?",
+      "gold_sql": "SELECT Num_of_Staff ,  Open_Year FROM museum WHERE name  =  'Plaza Museum'",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 422,
+      "db_id": "museum_visit",
+      "question": "What is the name of the museum that had no visitor yet?",
+      "gold_sql": "SELECT name FROM museum WHERE Museum_ID NOT IN (SELECT museum_id FROM visit)",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 447,
+      "db_id": "wta_1",
+      "question": "List the names of all winners who played in both 2013 and 2016.",
+      "gold_sql": "SELECT winner_name FROM matches WHERE YEAR  =  2013 INTERSECT SELECT winner_name FROM matches WHERE YEAR  =  2016",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 469,
+      "db_id": "wta_1",
+      "question": "Find the average ranking for each player and their first name.",
+      "gold_sql": "SELECT avg(ranking) ,  T1.first_name FROM players AS T1 JOIN rankings AS T2 ON T1.player_id  =  T2.player_id GROUP BY T1.first_name",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 470,
+      "db_id": "wta_1",
+      "question": "What are the first names of all players, and their average rankings?",
+      "gold_sql": "SELECT avg(ranking) ,  T1.first_name FROM players AS T1 JOIN rankings AS T2 ON T1.player_id  =  T2.player_id GROUP BY T1.first_name",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 481,
+      "db_id": "wta_1",
+      "question": "Find the number of matches happened in each year.",
+      "gold_sql": "SELECT count(*) ,  YEAR FROM matches GROUP BY YEAR",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 493,
+      "db_id": "battle_death",
+      "question": "List the name, date and result of each battle.",
+      "gold_sql": "SELECT name ,  date FROM battle",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 511,
+      "db_id": "student_transcripts_tracking",
+      "question": "How is the math course described?",
+      "gold_sql": "SELECT course_description FROM Courses WHERE course_name  =  'math'",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 517,
+      "db_id": "student_transcripts_tracking",
+      "question": "How many departments offer any degree?",
+      "gold_sql": "SELECT count(DISTINCT department_id) FROM Degree_Programs",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 537,
+      "db_id": "student_transcripts_tracking",
+      "question": "Find the kind of program which most number of students are enrolled in?",
+      "gold_sql": "SELECT T1.degree_summary_name FROM Degree_Programs AS T1 JOIN Student_Enrolment AS T2 ON T1.degree_program_id  =  T2.degree_program_id GROUP BY T1.degree_summary_name ORDER BY count(*) DESC LIMIT 1",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 539,
+      "db_id": "student_transcripts_tracking",
+      "question": "Find the program which most number of students are enrolled in. List both the id and the summary.",
+      "gold_sql": "SELECT T1.degree_program_id ,  T1.degree_summary_name FROM Degree_Programs AS T1 JOIN Student_Enrolment AS T2 ON T1.degree_program_id  =  T2.degree_program_id GROUP BY T1.degree_program_id ORDER BY count(*) DESC LIMIT 1",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 549,
+      "db_id": "student_transcripts_tracking",
+      "question": "Find the last name of the students who currently live in the state of North Carolina but have not registered in any degree program.",
+      "gold_sql": "SELECT T1.last_name FROM Students AS T1 JOIN Addresses AS T2 ON T1.current_address_id  =  T2.address_id WHERE T2.state_province_county  =  'NorthCarolina' EXCEPT SELECT DISTINCT T3.last_name FROM Students AS T3 JOIN Student_Enrolment AS T4 ON T3.student_id  =  T4.student_id",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 550,
+      "db_id": "student_transcripts_tracking",
+      "question": "What are the last name of the students who live in North Carolina but have not registered in any degree programs?",
+      "gold_sql": "SELECT T1.last_name FROM Students AS T1 JOIN Addresses AS T2 ON T1.current_address_id  =  T2.address_id WHERE T2.state_province_county  =  'NorthCarolina' EXCEPT SELECT DISTINCT T3.last_name FROM Students AS T3 JOIN Student_Enrolment AS T4 ON T3.student_id  =  T4.student_id",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 583,
+      "db_id": "student_transcripts_tracking",
+      "question": "Find the first name of the students who permanently live in the country Haiti or have the cell phone number 09700166582.",
+      "gold_sql": "SELECT T1.first_name FROM Students AS T1 JOIN Addresses AS T2 ON T1.permanent_address_id  =  T2.address_id WHERE T2.country  =  'Haiti' UNION SELECT first_name FROM Students WHERE cell_mobile_number  =  '09700166582'",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 617,
+      "db_id": "tvshow",
+      "question": "What is minimum and maximum share of TV series?",
+      "gold_sql": "SELECT max(SHARE) , min(SHARE) FROM TV_series;",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 630,
+      "db_id": "tvshow",
+      "question": "What is the produdction code and channel of the most recent cartoon?",
+      "gold_sql": "SELECT production_code ,  channel FROM cartoon ORDER BY original_air_date LIMIT 1",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 651,
+      "db_id": "poker_player",
+      "question": "List the final tables made and the best finishes of poker players.",
+      "gold_sql": "SELECT Final_Table_Made ,  Best_Finish FROM poker_player",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 652,
+      "db_id": "poker_player",
+      "question": "What are the final tables made and best finishes for all poker players?",
+      "gold_sql": "SELECT Final_Table_Made ,  Best_Finish FROM poker_player",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 695,
+      "db_id": "voter_1",
+      "question": "Of all the contestants who got voted, what is the contestant number and name of the contestant who got least votes?",
+      "gold_sql": "SELECT T1.contestant_number , T1.contestant_name FROM contestants AS T1 JOIN votes AS T2 ON T1.contestant_number  =  T2.contestant_number GROUP BY T1.contestant_number ORDER BY count(*) ASC LIMIT 1",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 700,
+      "db_id": "voter_1",
+      "question": "List the area codes in which voters voted both for the contestant 'Tabatha Gehling' and the contestant 'Kelly Clauss'.",
+      "gold_sql": "SELECT T3.area_code FROM contestants AS T1 JOIN votes AS T2 ON T1.contestant_number  =  T2.contestant_number JOIN area_code_state AS T3 ON T2.state  =  T3.state WHERE T1.contestant_name  =  'Tabatha Gehling' INTERSECT SELECT T3.area_code FROM contestants AS T1 JOIN votes AS T2 ON T1.contestant_number  =  T2.contestant_number JOIN area_code_state AS T3 ON T2.state  =  T3.state WHERE T1.contestant_name  =  'Kelly Clauss'",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 717,
+      "db_id": "world_1",
+      "question": "What region does Angola belong to and what is its population?",
+      "gold_sql": "SELECT Population ,  Region FROM country WHERE Name  =  \"Angola\"",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 755,
+      "db_id": "world_1",
+      "question": "Which countries have either English or Dutch as an official language?",
+      "gold_sql": "SELECT * FROM country AS T1 JOIN countrylanguage AS T2 ON T1.Code  =  T2.CountryCode WHERE T2.Language  =  \"English\" AND IsOfficial  =  \"T\" UNION SELECT * FROM country AS T1 JOIN countrylanguage AS T2 ON T1.Code  =  T2.CountryCode WHERE T2.Language  =  \"Dutch\" AND IsOfficial  =  \"T\"",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 773,
+      "db_id": "world_1",
+      "question": "Which countries have greater area than that of any country in Europe?",
+      "gold_sql": "SELECT Name FROM country WHERE SurfaceArea  >  (SELECT min(SurfaceArea) FROM country WHERE Continent  =  \"Europe\")",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 904,
+      "db_id": "network_1",
+      "question": "Show the names of high schoolers who have likes, and numbers of likes for each.",
+      "gold_sql": "SELECT T2.name ,  count(*) FROM Likes AS T1 JOIN Highschooler AS T2 ON T1.student_id  =  T2.id GROUP BY T1.student_id",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 943,
+      "db_id": "dog_kennels",
+      "question": "Find the id and cell phone of the professionals who operate two or more types of treatments.",
+      "gold_sql": "SELECT T1.professional_id ,  T1.cell_number FROM Professionals AS T1 JOIN Treatments AS T2 ON T1.professional_id  =  T2.professional_id GROUP BY T1.professional_id HAVING count(*)  >=  2",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 944,
+      "db_id": "dog_kennels",
+      "question": "What are the first name and last name of the professionals who have done treatment with cost below average?",
+      "gold_sql": "SELECT DISTINCT T1.first_name ,  T1.last_name FROM Professionals AS T1 JOIN Treatments AS T2 WHERE cost_of_treatment  <  ( SELECT avg(cost_of_treatment) FROM Treatments )",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 964,
+      "db_id": "dog_kennels",
+      "question": "What are the arriving date and the departing date of all the dogs?",
+      "gold_sql": "SELECT date_arrived ,  date_departed FROM Dogs",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 972,
+      "db_id": "dog_kennels",
+      "question": "Which owners live in the state whose name contains the substring 'North'? List his first name, last name and email.",
+      "gold_sql": "SELECT first_name ,  last_name ,  email_address FROM Owners WHERE state LIKE '%North%'",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 973,
+      "db_id": "dog_kennels",
+      "question": "Return the first name, last name and email of the owners living in a state whose name contains the substring 'North'.",
+      "gold_sql": "SELECT first_name ,  last_name ,  email_address FROM Owners WHERE state LIKE '%North%'",
+      "difficulty": "simple",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 1032,
+      "db_id": "real_estate_properties",
+      "question": "Show the property type descriptions of properties belonging to that code.",
+      "gold_sql": "SELECT T2.property_type_description FROM Properties AS T1 JOIN Ref_Property_Types AS T2 ON T1.property_type_code  =  T2.property_type_code GROUP BY T1.property_type_code",
+      "difficulty": "moderate",
+      "outcome_hint": "failure"
+    },
+    {
+      "example_index": 1033,
+      "db_id": "real_estate_properties",
+      "question": "What are the names of properties that are either houses or apartments with more than 1 room?",
+      "gold_sql": "SELECT property_name FROM Properties WHERE property_type_code  =  \"House\" UNION SELECT property_name FROM Properties WHERE property_type_code  =  \"Apartment\" AND room_count  >  1",
+      "difficulty": "complex",
+      "outcome_hint": "failure"
+    }
+  ]
+}
