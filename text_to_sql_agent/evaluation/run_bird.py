@@ -19,6 +19,7 @@ from text_to_sql_agent.agents.selector import prewarm_selector_cache
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.evaluation.metrics import (
     BenchmarkMetrics,
+    exact_match,
     execution_match as official_execution_match,
 )
 from text_to_sql_agent.graph.pipeline import build_graph
@@ -195,6 +196,7 @@ async def _evaluate_one(
         "predicted_sql": predicted_sql,
         "gold_sql": example.gold_sql,
         "execution_match": bool(execution_match),
+        "exact_match": exact_match(predicted_sql, example.gold_sql),
         "r_ves": round(_compute_r_ves(pred_time, gold_time, bool(execution_match)), 4),
         "pred_time_s": round(pred_time, 4),
         "gold_time_s": round(gold_time, 4),
@@ -230,6 +232,7 @@ async def run_bird_benchmark(
     semaphore = asyncio.Semaphore(concurrency)
     results_by_index: dict[int, dict[str, Any]] = {}
     exec_hits = 0
+    em_hits = 0
     r_ves_sum = 0.0
     err_count = 0
     lock = asyncio.Lock()
@@ -253,6 +256,8 @@ async def run_bird_benchmark(
             results_by_index[idx] = result
             if result["execution_match"]:
                 exec_hits += 1
+            if result.get("exact_match"):
+                em_hits += 1
             r_ves_sum += result["r_ves"]
             if result.get("error_message"):
                 err_count += 1
@@ -262,7 +267,7 @@ async def run_bird_benchmark(
                     file=sys.stderr,
                 )
             done = len(results_by_index)
-            pbar.set_postfix(EX=f"{exec_hits/done:.0%}", RVES=f"{r_ves_sum/done:.2f}", err=err_count)
+            pbar.set_postfix(EX=f"{exec_hits/done:.0%}", EM=f"{em_hits/done:.0%}", RVES=f"{r_ves_sum/done:.2f}", err=err_count)
             pbar.update(1)
 
     await asyncio.gather(*[_worker(i, ex) for i, ex in enumerate(examples)])
@@ -277,6 +282,7 @@ async def run_bird_benchmark(
 
     metrics = BenchmarkMetrics(
         execution_accuracy=(exec_hits / total) if total else 0.0,
+        exact_match=(em_hits / total) if total else 0.0,
         r_ves=(r_ves_sum / total) if total else 0.0,
         total=total,
         valid_predictions=valid,
@@ -338,6 +344,7 @@ def main() -> None:
         "prewarm": args.prewarm,
         "metrics": {
             "execution_accuracy": metrics.execution_accuracy,
+            "exact_match": metrics.exact_match,
             "r_ves": metrics.r_ves,
             "total": metrics.total,
             "valid_predictions": metrics.valid_predictions,
@@ -366,6 +373,7 @@ def main() -> None:
     print("BIRD evaluation completed")
     print(f"  Total: {metrics.total}")
     print(f"  EX: {metrics.execution_accuracy:.4f}")
+    print(f"  EM: {metrics.exact_match:.4f}")
     print(f"  R-VES: {metrics.r_ves:.4f}")
     print(f"  Prewarm: {summary['prewarm_time_s']:.2f}s")
     print(f"  Eval: {summary['eval_time_s']:.2f}s")

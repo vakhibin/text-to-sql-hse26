@@ -39,7 +39,50 @@ def normalize_sql(sql: str) -> str:
     return compact.lower()
 
 
+def _canonical_sql(sql: str) -> str:
+    """Normalize SQL via sqlglot AST: resolve aliases, lowercase, strip formatting."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+        from sqlglot.optimizer import canonicalize, normalize_identifiers
+
+        parsed = sqlglot.parse_one(sql.rstrip(";").strip(), dialect="sqlite")
+        normed = normalize_identifiers.normalize_identifiers(parsed, dialect="sqlite")
+        canon = canonicalize.canonicalize(normed)
+
+        alias_map: dict[str, str] = {}
+        for table in canon.find_all(exp.Table):
+            if table.alias:
+                alias_map[table.alias.lower()] = table.name.lower()
+
+        for col in canon.find_all(exp.Column):
+            tbl = (col.table or "").lower()
+            if tbl in alias_map:
+                col.set("table", exp.to_identifier(alias_map[tbl]))
+
+        for table in canon.find_all(exp.Table):
+            if table.alias:
+                table.set("alias", None)
+
+        # Count distinct real tables to decide qualifier stripping
+        table_names = {t.name.lower() for t in canon.find_all(exp.Table)}
+        if len(table_names) <= 1:
+            for col in canon.find_all(exp.Column):
+                if col.table:
+                    col.set("table", None)
+
+        result = canon.sql(dialect="sqlite")
+        return " ".join(result.split()).lower()
+    except Exception:
+        return normalize_sql(sql)
+
+
 def exact_match(predicted_sql: str, gold_sql: str) -> bool:
+    """AST-based exact match with alias normalization; string fallback."""
+    canon_pred = _canonical_sql(predicted_sql)
+    canon_gold = _canonical_sql(gold_sql)
+    if canon_pred == canon_gold:
+        return True
     return normalize_sql(predicted_sql) == normalize_sql(gold_sql)
 
 
