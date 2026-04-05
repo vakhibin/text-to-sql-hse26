@@ -362,6 +362,16 @@ async def _repair_query_sketch_with_structured_output(
 
 async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
     """Build a compact query-generation plan from question and schema."""
+    from text_to_sql_agent.config import settings as _cfg
+
+    if not _cfg.query_sketcher_enabled:
+        return {
+            "query_sketch": {},
+            "query_sketch_text": "",
+            "stage_status": {**dict(state.get("stage_status", {})), "sketcher": "skipped"},
+            "warnings": list(state.get("warnings", [])),
+        }
+
     started = time.perf_counter()
     stage_status = dict(state.get("stage_status", {}))
     stage_timings = dict(state.get("stage_timings", {}))
