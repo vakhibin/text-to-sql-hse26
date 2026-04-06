@@ -2,60 +2,61 @@
 
 ## 1. Общая схема
 
-Агент реализован как ориентированный ациклический граф (DAG) с одним циклическим ребром (refiner -> refiner). Граф компилируется LangGraph в runtime и исполняется асинхронно.
+Агент реализован как ориентированный граф с одним циклическим ребром (refiner → refiner). Граф компилируется LangGraph и исполняется асинхронно.
 
 ```
                 START
-                  |
-            [1. Selector]
-                  |
-            (failed?) --yes--> END
-                  |no
-            [2. Decomposer]
-                  |
-            [3. Generator]
-                  |
-            (пустые кандидаты?) --yes--> END
-                  |no
-            [4. Execution Filter]
-                  |
-            (ни одного валидного?) --yes--> END
-                  |no
-            [5. Judge]
-                  |
-            (нет best_sql?) --yes--> END
-                  |no
-            [6. Refiner] <----+
-                  |           |
-            (ошибка исполнения |
-             И attempts < 3?) |
-                  |yes--------+
-                  |no
+                  │
+            [1. Selector]         — schema linking: vector + lexical retrieval → LLM reranking
+                  │
+            (failed?) ──yes──→ END
+                  │no
+            [2. Decomposer]       — complexity classification + sub-questions
+                  │
+            [3. Query Sketcher]   — structured query plan (tables, joins, filters, aggregations)
+                  │
+            [4. Generator]        — ensemble SQL generation (multi-model, multi-temperature)
+                  │
+            (пустые кандидаты?) ──yes──→ END
+                  │no
+            [5. Execution Filter] — SQL execution + schema validation + refusal guardrail
+                  │
+            ┌─── (simple cheap path?) ──yes──→ END (best_sql = first valid)
+            │no
+            [6. Judge]            — LLM-as-judge selection
+                  │
+            (нет best_sql?) ──yes──→ END
+                  │no
+            [7. Refiner] ←────┐  — iterative self-correction
+                  │            │
+            (ошибка исполнения │
+             И attempts < 3?) │
+                  │yes─────────┘
+                  │no
                  END
 ```
 
-Каждый узел -- async-функция, принимающая и возвращающая `SQLAgentState` (TypedDict). Состояние иммутабельно: каждый узел возвращает новый словарь через `{**state, ...}`.
+Каждый узел — async-функция, принимающая и возвращающая `SQLAgentState` (TypedDict).
 
 ---
 
 ## 2. Общее состояние (`SQLAgentState`)
 
-Все стадии работают с единым типизированным словарём. Ключевые группы полей:
-
 | Группа | Поля | Кто пишет |
 |---|---|---|
-| Вход | `question`, `db_id`, `evidence` | `make_initial_state()` |
-| Selector | `full_schema`, `filtered_schema` | Selector |
+| Вход | `question`, `db_id`, `evidence`, `schema_root` | `make_initial_state()` |
+| Selector | `full_schema`, `filtered_schema`, `retrieved_schema_context` | Selector |
 | Decomposer | `complexity`, `sub_questions` | Decomposer |
+| Sketcher | `query_sketch`, `query_sketch_text` | Query Sketcher |
 | Generator | `candidates` | Generator |
-| Exec Filter | `valid_candidates` | Execution Filter |
-| Judge | `best_sql`, `judge_reasoning` | Judge |
+| Exec Filter | `valid_candidates`, `candidate_diagnostics` | Execution Filter |
+| Judge | `best_sql`, `judge_reasoning`, `judge_confidence` | Judge |
 | Refiner | `final_sql`, `execution_result`, `refine_attempts`, `error_message` | Refiner |
-| Оркестрация | `stage_status`, `stage_timings`, `trace_id`, `warnings` | Все стадии |
+| Observability | `stage_status`, `stage_timings`, `trace_id`, `warnings`, `llm_usage`, `total_cost_usd` | Все стадии |
 
-`stage_status` -- словарь `{stage_name: "pending" | "running" | "success" | "failed"}`. Используется для условной маршрутизации: например, `_route_after_selector` проверяет `stage_status["selector"] == "failed"` и выходит в END.
+`warnings` — накопительный список строк. Каждая стадия дописывает, не перезаписывая.
 
-`warnings` -- накопительный список строк. Каждая стадия **дописывает**, не перезаписывая. Собираются в итоговый JSON результатов.
+`llm_usage` — список dict'ов с информацией о каждом LLM-вызове (модель, токены, стоимость).
 
 ---
 
@@ -65,81 +66,51 @@
 
 ### 3.1. Загрузка схемы
 
-`load_schema(db_id)` парсит `tables.json` из Spider-датасета и строит структурированный словарь:
+`load_schema(db_id)` парсит `tables.json` и строит структурированный словарь с таблицами, колонками (с типами данных), primary/foreign keys и sample values. Для каждой колонки выполняется `SELECT col FROM table WHERE col IS NOT NULL LIMIT 3` — примеры реальных значений помогают LLM понять типы и формат.
 
-```python
-{
-  "db_id": "concert_singer",
-  "tables": [
-    {
-      "name": "singer",
-      "columns": [{"name": "Singer_ID", "type": "NUMBER", "sample_values": ["1", "2", "3"]}, ...],
-      "primary_keys": ["Singer_ID"],
-      "foreign_keys": [{"column": "...", "ref_table": "...", "ref_column": "..."}]
-    },
-    ...
-  ],
-  "db_path": "databases/spider/database/concert_singer/concert_singer.sqlite"
-}
-```
+Результаты кэшируются по ключу `(schema_root, db_id, with_sample_values, sample_limit)`.
 
-Для каждой колонки выполняется `SELECT col FROM table WHERE col IS NOT NULL LIMIT 3` в SQLite -- это даёт примеры реальных значений (`sample_values`). Примеры помогают LLM понять типы данных и формат значений (например, что `Year` -- строка `"2014"`, а не число).
+### 3.2. Гибридный retrieval (vector + lexical)
 
-### 3.2. Векторная индексация
+Два параллельных канала:
 
-`VectorStoreClient` индексирует каждую таблицу как отдельный документ в ChromaDB. Формат документа:
+1. **Векторный**: ChromaDB, одна запись на таблицу. Формат документа включает имя таблицы, колонки с типами, sample values, PK/FK. Эмбеддинги: `openai/text-embedding-3-large`. Top-K=15 по косинусной близости к вопросу.
 
-```
-table=singer
-columns=Singer_ID:NUMBER samples=['1', '2', '3']; Name:TEXT samples=['Joe Sharp', ...]
-primary_keys=['Singer_ID']
-foreign_keys=[]
-```
+2. **Лексический**: `selector_top_k_lexical_tables=8` таблиц, отобранных по совпадению токенов вопроса с именами таблиц и колонок. Ловит случаи, где семантический поиск промахивается по редким именам.
 
-Индексация происходит **один раз на db_id** (защита через `asyncio.Lock` + `_indexed_db_ids` set). Повторные вызовы для того же `db_id` -- no-op.
+Результаты объединяются: vector-кандидаты + lexical-кандидаты (deduplicated).
 
-Эмбеддинги: `openai/text-embedding-3-large` через OpenRouter.
+### 3.3. LLM-реранкинг
 
-### 3.3. Retrieval
-
-`similarity_search(query=question, k=15, filter={"db_id": db_id})` -- берём Top-15 таблиц по косинусной близости к вопросу. На базах с < 15 таблицами возвращаются все.
-
-Score заменён на позиционный ранг (`1.0 - i/len(docs)`) вместо raw cosine similarity -- убирает предупреждения LangChain о score вне [0,1].
-
-### 3.4. LLM-реранкинг
-
-Top-15 кандидатов передаются LLM (primary generator, temperature=0.0) с промптом:
+Объединённые кандидаты передаются LLM (primary generator, temperature=0.0):
 
 ```
 Select 3 to 5 table names that are most relevant to answer the question.
 Return STRICT JSON: {"selected_tables": [...], "reasoning": "..."}
 ```
 
-Ответ парсится через многоуровневую стратегию (`_safe_parse_selected_tables`):
-1. Strict JSON
-2. JSON в code fence (````json ... ````)
-3. Первый JSON-объект в тексте
-4. Plain list `[table1, table2]`
-5. Построчный парсинг
+Парсинг многоуровневый: strict JSON → JSON в code fence → первый JSON-объект → plain list → построчный.
 
-### 3.5. Padding-политика
+### 3.4. Padding и fallback
 
-После парсинга -- фильтрация: оставляем только имена, которые реально есть среди candidate_names. Далее:
+- Реранкер вернул 0 валидных имён → fallback к top vector candidates.
+- Вернул < min (3) → padding из vector candidates.
+- Вернул >= min → обрезка до max (5).
 
-- Если реранкер вернул 0 валидных имён -> **fallback**: берём top-`min` из vector candidates.
-- Если вернул меньше `min` (по умолчанию 3) -> **padding**: дополняем из vector candidates, сохраняя выбор реранкера.
-- Если вернул >= `min` -> обрезаем до `max` (по умолчанию 5).
-
-### 3.6. mSchema
+### 3.5. mSchema
 
 Отфильтрованные таблицы форматируются в компактный mSchema:
 
 ```
-singer(Singer_ID:NUMBER sample=['1', '2', '3'], Name:TEXT sample=['Joe Sharp', ...]) pk=['Singer_ID']
-singer_in_concert(concert_ID:NUMBER, Singer_ID:TEXT) pk=['concert_ID'] fk=[Singer_ID->singer.Singer_ID; concert_ID->concert.concert_ID]
+singer(Singer_ID:NUMBER sample=['1','2'], Name:TEXT sample=['Joe Sharp']) pk=['Singer_ID']
+concert(concert_ID:NUMBER, Year:TEXT) pk=['concert_ID'] fk=[Singer_ID->singer.Singer_ID]
 ```
 
-Этот формат передаётся во все последующие стадии, которым нужна информация о схеме.
+Этот формат передаётся во все последующие стадии.
+
+### 3.6. Prewarm
+
+`prewarm_selector_cache()` предзагружает схемы и vector index для всех БД до начала benchmark-прогона. Устраняет cold-start на первых примерах.
 
 ---
 
@@ -147,352 +118,349 @@ singer_in_concert(concert_ID:NUMBER, Singer_ID:TEXT) pk=['concert_ID'] fk=[Singe
 
 **Файлы**: `agents/decomposer.py`, `prompts/decomposer.py`
 
-### 4.1. Что делает
-
-Принимает `question` и опциональный `evidence`, возвращает:
+Возвращает:
 - `complexity`: `"simple"` | `"moderate"` | `"complex"` | `"unknown"`
 - `sub_questions`: список подвопросов (может быть пустым)
 
-### 4.2. Как complexity используется дальше
+Complexity управляет маршрутизацией:
+- `simple`: сокращённый бюджет генерации, eligible для cheap path (skip judge)
+- `moderate`: сокращённый ансамбль (`MODERATE_NUM_CANDIDATES=2`, `MODERATE_PRIMARY_CALLS=2`)
+- `complex` / `unknown`: полный ансамбль
 
-`complexity` и `sub_questions` передаются **в промпт генератора** как подсказки:
+Fallback: JSON не распарсился → `complexity="unknown"`, pipeline продолжает.
 
-```
-Complexity:
-moderate
+---
 
-Decomposition hints:
-- Which table stores singer information?
-- How to filter by country France?
-- Which aggregate functions needed for avg, min, max?
-```
+## 5. Стадия 3: Query Sketcher
 
-Это помогает генератору структурировать рассуждение, особенно для complex-запросов с вложенными подзапросами, GROUP BY + HAVING, INTERSECT/EXCEPT.
+**Файлы**: `agents/query_sketcher.py`, `prompts/query_sketcher.py`
 
-Для `simple` -- подвопросы не генерируются (пустой список), в промпте будет `- (none)`. Генератор получает сигнал, что запрос простой и не требует сложной декомпозиции.
+### 5.1. Назначение
 
-### 4.3. Парсинг ответа
+Генерирует структурированный план запроса **до** генерации SQL. Скетч указывает генератору: какие таблицы использовать, как соединять, какие фильтры и агрегации применять, нужны ли подзапросы.
 
-LLM вызывается с temperature=0.0 и системным сообщением "Return strict JSON only." Ожидаемый формат:
+### 5.2. Формат скетча
 
 ```json
 {
-  "complexity": "moderate",
-  "sub_questions": ["Which table has age info?", "How to compute average?"],
-  "reasoning": "Question requires aggregation with filter"
+  "tables": ["singer", "concert", "singer_in_concert"],
+  "join_path": "singer → singer_in_concert → concert",
+  "filters": ["singer.Country = 'France'"],
+  "aggregations": ["COUNT(*)"],
+  "grouping": [],
+  "ordering": [],
+  "needs_subquery": false,
+  "risk_flags": []
 }
 ```
 
-Парсинг: `_extract_json_blob` (снятие code fence, поиск `{...}`) -> `json.loads` -> валидация. Если complexity не из `{"simple", "moderate", "complex"}` -- ставится `"unknown"`.
+### 5.3. Модель
 
-### 4.4. Fallback-поведение
+Настраивается отдельно: `QUERY_SKETCHER_MODEL` (по умолчанию fallback на primary generator). Можно ставить мощную модель на скетчер и дешёвые на генерацию — скетчер берёт на себя "мышление", генератору остаётся кодирование.
 
-- JSON не распарсился -> `complexity="unknown"`, `sub_questions=[]`, warning в лог.
-- Complexity `"complex"` но подвопросов нет -> warning, но pipeline продолжает.
-- Complexity `"simple"` -> подвопросы принудительно `[]` (даже если LLM вернул что-то).
-- Полный exception (сеть, timeout) -> `complexity="unknown"`, `error_message` заполняется.
+Может быть отключен: `QUERY_SKETCHER_ENABLED=false` (для ablation study).
 
-Ни один из этих fallback'ов не останавливает pipeline -- decomposer всегда возвращает `stage_status="success"` или `"failed"`, но даже при `"failed"` граф продолжает к generator (нет условного ребра после decomposer).
+### 5.4. Трёхступенчатая надёжность
+
+1. **Толерантный JSON-парсинг** raw-ответа (code fence removal, поиск `{...}`)
+2. **Structured output repair**: если JSON сломан, переотправка через `with_structured_output()` с Pydantic-схемой
+3. **Детерминистический fallback**: минимальный скетч на основе state (filtered_schema → извлечение таблиц и колонок)
+
+Каждый шаг логируется в `warnings`.
 
 ---
 
-## 5. Стадия 3: Generator (Ensemble)
+## 6. Стадия 4: Generator (Ensemble)
 
 **Файлы**: `agents/generator.py`, `prompts/generator.py`, `tools/few_shot.py`, `tools/llm_router.py`
 
-### 5.1. Ансамбль
+### 6.1. Адаптивный ансамбль
 
-Генерируется `NUM_CANDIDATES` (по умолчанию 8) SQL-кандидатов **параллельно** через `asyncio.gather`. Кандидаты распределяются между моделями:
+Бюджет кандидатов зависит от `complexity`:
 
-- Первые `PRIMARY_CALLS` (5) -> `google/gemini-2.5-pro`, temperature=0.2
-- Следующие `SECONDARY_CALLS` (3) -> `deepseek/deepseek-chat-v3`, temperature=0.6
+| Complexity | Кандидатов | Primary | Secondary |
+|---|---|---|---|
+| `complex` / `unknown` | 5 | 3 (gemini-2.5-pro) | 2 (gpt-oss-120b) |
+| `moderate` | 2 | 2 (gemini-2.5-pro) | 0 |
+| `simple` | 5 | 3 | 2 (но может выйти на cheap path) |
 
-Распределение через `LLMRouter.generator_roles()` -- возвращает список `[PRIMARY, PRIMARY, PRIMARY, PRIMARY, PRIMARY, SECONDARY, SECONDARY, SECONDARY]`. Каждый кандидат получает `roles[idx % len(roles)]`.
+Кандидаты генерируются **параллельно** через `asyncio.gather`.
 
-### 5.2. Разнообразие через few-shot
+### 6.2. Промпт генератора
 
-Каждый кандидат получает **уникальный** набор few-shot примеров:
-
-```python
-rng = random.Random(seed + candidate_index)
-examples = rng.sample(source, k=2)
-```
-
-`seed=42` (конфигурируемый) + `candidate_index` -- детерминированное, но разное сэмплирование для каждого кандидата. Приоритет отдаётся примерам из **той же БД** (`target_db_id`): если в пуле >= k примеров из этой БД, берём их. Иначе -- из общего пула.
-
-Пул загружается из `train_spider.json` (до 3000 примеров).
-
-### 5.3. Промпт генератора
-
-Каждый кандидат получает полный промпт с:
-- Вопрос
+Каждый кандидат получает:
+- Вопрос + evidence
 - `complexity` и `sub_questions` от decomposer
-- `filtered_schema` (mSchema) от selector
+- **`query_sketch_text`** от sketcher — структурированный план
+- `filtered_schema` (mSchema)
 - Уникальные few-shot примеры
-- Правила: "Use ONLY the tables and columns listed in the mSchema above"
+- Правила генерации (13 правил):
+  - Rule 9: порядок колонок в SELECT по порядку упоминания в вопросе
+  - Rule 11: не добавлять JOIN если все колонки в одной таблице
+  - Rule 13: "all information about X" → `SELECT *`
 
-System message: `"Output only SQL."` -- минимизирует "болтовню" и reasoning в ответе.
+System message: `"Output only SQL."` — минимизирует reasoning в ответе.
 
-### 5.4. Извлечение SQL
+### 6.3. Few-shot примеры
 
-`_extract_sql()` -- очистка ответа LLM:
-1. Снятие markdown code fences (` ```sql ... ``` `)
-2. Коллапс whitespace в одну строку
-3. Добавление `;` если отсутствует
+Каждый кандидат получает уникальный набор (seed + candidate_index). Приоритет — примеры из той же БД. Пул загружается из `train_spider.json`.
 
-Пустые ответы отфильтровываются. Если все 8 кандидатов пустые -- warning, pipeline продолжает к execution filter с пустым `candidates=[]`.
+Опционально: семантический retrieval few-shot из ChromaDB (`FEW_SHOT_SEMANTIC_RETRIEVAL=true`).
 
-### 5.5. Температурная стратегия
+### 6.4. Температурная стратегия
 
-- Primary (0.2) -- низкая температура, более "каноничные" запросы
-- Secondary (0.6) -- высокая температура, более креативные/альтернативные подходы
+- Primary (0.2) — каноничные запросы
+- Secondary (0.6) — альтернативные подходы
 
-Разные модели + разные температуры + разные few-shot = максимальное разнообразие при фиксированном числе вызовов.
-
----
-
-## 6. Стадия 4: Execution Filter
-
-**Файлы**: `agents/execution_filter.py`, `tools/sql_executor.py`
-
-### 6.1. Что делает
-
-Исполняет **каждый** SQL-кандидат на реальной SQLite-базе и отсеивает те, что упали с ошибкой.
-
-### 6.2. Механика исполнения
-
-```python
-engine = create_async_engine("sqlite+aiosqlite:///path/to/db.sqlite")
-async with engine.connect() as conn:
-    result = await asyncio.wait_for(conn.execute(text(sql)), timeout=20)
-```
-
-- Используется `aiosqlite` + `SQLAlchemy async` -- неблокирующее исполнение.
-- Каждый запрос изолирован в отдельном `engine` (создаётся и dispose'ится для каждого вызова).
-- Timeout: `execution_timeout_seconds=20` -- защита от зависших запросов (бесконечные JOIN'ы, CROSS JOIN).
-
-### 6.3. Результат
-
-```python
-@dataclass
-class SQLExecutionResult:
-    success: bool
-    rows: Optional[list[tuple[Any, ...]]]
-    error: Optional[str]
-```
-
-Кандидаты с `success=True` попадают в `valid_candidates`. Ошибки каждого невалидного кандидата логируются в `warnings`.
-
-### 6.4. Fallback при нуле валидных
-
-Если ни один кандидат не прошёл -- `valid_candidates=[]`, но pipeline **продолжает**: Judge получит `candidates` (нефильтрованные) как fallback-пул через логику `preferred = valid_candidates if valid_candidates else candidates`.
+Разные модели + разные температуры + разные few-shot = максимальное разнообразие.
 
 ---
 
-## 7. Стадия 5: Judge (LLM-as-Judge)
+## 7. Стадия 5: Execution Filter
+
+**Файлы**: `agents/execution_filter.py`, `tools/sql_executor.py`, `tools/sql_schema_validator.py`, `tools/sql_candidate_analysis.py`
+
+### 7.1. Валидация
+
+Для каждого кандидата выполняются три проверки:
+
+1. **Refusal guardrail** (`_is_refusal_sql`): детектирует LLM-отказы вида `SELECT 'I cannot answer...'` по regex-паттернам. Отказы отсеиваются до исполнения.
+
+2. **SQL schema validation** (`sqlglot`): парсит SQL в AST, проверяет существование таблиц и колонок относительно загруженной схемы. Ловит hallucinated identifiers до обращения к SQLite.
+
+3. **SQL execution**: `aiosqlite` + SQLAlchemy async, timeout 20 секунд. Кандидаты с `success=True` попадают в `valid_candidates`.
+
+### 7.2. Структурный анализ
+
+`sql_candidate_analysis` через `sqlglot` собирает диагностику:
+- `join_count`, `has_subquery`, `set_operation`
+- `projected_columns`, `table_count`
+- Передаётся в `candidate_diagnostics` для judge и cheap path.
+
+### 7.3. Simple cheap path
+
+Для `simple` запросов, если первый валидный кандидат проходит структурные проверки (0 join'ов, нет подзапросов, нет set operations, нет schema ошибок):
+- `best_sql` = первый валидный кандидат
+- **Judge пропускается**
+- Экономия одного LLM-вызова + ускорение ~2-3 секунды
+
+### 7.4. Fallback
+
+Все невалидны → `valid_candidates=[]`, judge получит raw candidates как fallback.
+
+---
+
+## 8. Стадия 6: Judge (LLM-as-Judge)
 
 **Файлы**: `agents/judge.py`, `prompts/judge.py`
 
-### 7.1. Пул кандидатов
+### 8.1. Lean-промпт
 
-Judge работает с `valid_candidates` (приоритет) или `candidates` (fallback):
+Урок: перегрузка judge контекстом (sketch, risk flags, sub_questions, candidate diffs, rejected candidates) **ухудшает** качество selection. Текущий промпт — lean:
+- Вопрос + evidence
+- Filtered schema (mSchema)
+- Пронумерованные кандидаты с краткими structural summaries
 
-```python
-preferred = state.get("valid_candidates", [])
-fallback = state.get("candidates", [])
-pool = preferred if preferred else fallback
+### 8.2. Structured output
+
+Judge возвращает:
+```json
+{
+  "best_index": 2,
+  "confidence": "high",
+  "needs_refine": false,
+  "issues": [],
+  "reasoning": "..."
+}
 ```
 
-### 7.2. Промпт
+`confidence`: `"high"` | `"medium"` | `"low"`.
+`issues`: из фиксированного словаря (`"projection_mismatch"`, `"unnecessary_join"` и т.д.).
 
-Judge получает:
-- Вопрос
-- mSchema
-- Пронумерованный список кандидатов: `0: SELECT ...\n1: SELECT ...\n2: SELECT ...`
+### 8.3. Модель
 
-Должен вернуть: `{"best_index": 0, "reasoning": "..."}`.
+`openai/gpt-4.1`, temperature=0.0. Отдельная от генераторов — избегает bias.
 
-### 7.3. Модель и температура
+### 8.4. Fallback
 
-Используется **отдельная модель** -- `openai/gpt-4.1` (temperature=0.0). Это принципиально: judge не должен совпадать с generator, чтобы избежать bias'а "нравится свой собственный стиль".
-
-### 7.4. Fallback-политика
-
-- JSON не распарсился -> берём кандидат `[0]` (первый), warning.
-- `best_index` не int или вне диапазона -> берём кандидат `[0]`, warning.
-- Exception при вызове LLM -> берём кандидат `[0]`, `stage_status="success"` (pipeline не падает).
-
-Judge **никогда** не ставит `stage_status="failed"` при наличии кандидатов -- это защита от потери уже сгенерированного SQL из-за сетевой ошибки на стадии judge.
+JSON не распарсился / exception → берём кандидат `[0]`. Judge никогда не ставит `stage_status="failed"` при наличии кандидатов.
 
 ---
 
-## 8. Стадия 6: Refiner (Итеративная самокоррекция)
+## 9. Стадия 7: Refiner (Итеративная самокоррекция)
 
 **Файлы**: `agents/refiner.py`, `prompts/refiner.py`
 
-### 8.1. Цикл работы
+### 9.1. Цикл
 
-1. Берёт `final_sql` (если уже было уточнение) или `best_sql` (от judge).
-2. Исполняет на реальной БД.
-3. Если `success=True` -> записывает `final_sql`, обнуляет `error_message`, выходит.
-4. Если execution failed -> инкрементирует `refine_attempts`, вызывает LLM для исправления.
+1. Берёт `best_sql` от judge
+2. Исполняет на реальной БД
+3. `success=True` → `final_sql`, выход
+4. Execution failed → LLM-коррекция, `refine_attempts++`, retry
 
-### 8.2. Промпт рефайнера
+Максимум 3 итерации. Модель: `openai/gpt-4.1` (temperature=0.0).
 
-```
-Failed SQL:
-SELECT ... ;
+### 9.2. Schema-reference validation
 
-Execution error:
-(sqlite3.OperationalError) no such table: song
+Перед исполнением на SQLite запускается легковесная проверка через `sql_schema_validator` — ловит очевидные ошибки (несуществующие таблицы/колонки) и передаёт их в промпт рефайнера для точечного исправления.
 
-Output only corrected SQL ending with semicolon.
-```
+### 9.3. Защита от деструкции
 
-LLM получает полный контекст: вопрос, mSchema, падающий SQL и точный текст ошибки. Модель: `openai/gpt-4.1` (temperature=0.0) -- та же, что у judge, для максимальной точности при исправлении.
-
-### 8.3. Условная маршрутизация цикла
-
-```python
-def _route_after_refiner(state):
-    has_error = bool(state.get("error_message"))
-    attempts = state.get("refine_attempts", 0)
-    if has_error and attempts < MAX_REFINE_ATTEMPTS:
-        return "retry_refiner"   # -> ребро обратно к refiner
-    return "finish"              # -> END
-```
-
-Максимум 3 итерации (конфигурируемо). Если после 3 попыток SQL всё ещё падает -- pipeline завершается с `error_message` и последней версией `final_sql`.
-
-### 8.4. Что происходит при каждой итерации
-
-- `refine_attempts` инкрементируется.
-- `final_sql` обновляется на исправленный вариант от LLM.
-- `error_message` содержит ошибку **текущей** итерации.
-- На следующей итерации refiner берёт **обновлённый** `final_sql` и пытается исполнить снова.
+Refiner **никогда не уничтожает** последний рабочий SQL. Если LLM-коррекция вернула пустоту — сохраняется предыдущая версия.
 
 ---
 
-## 9. LLM Router
+## 10. LLM Router
 
 **Файл**: `tools/llm_router.py`
 
-### 9.1. Маршрутизация моделей
-
-`ModelRole` -> model id:
+### 10.1. Маршрутизация моделей
 
 | Role | Model | Temperature |
 |---|---|---|
 | `GENERATOR_PRIMARY` | `google/gemini-2.5-pro` | 0.2 |
-| `GENERATOR_SECONDARY` | `deepseek/deepseek-chat-v3` | 0.6 |
+| `GENERATOR_SECONDARY` | `openai/gpt-oss-120b` | 0.6 |
+| `QUERY_SKETCHER` | `google/gemini-2.5-pro` (настраиваемо) | 0.0 |
 | `JUDGE` | `openai/gpt-4.1` | 0.0 |
 | `REFINER` | `openai/gpt-4.1` | 0.0 |
 
-Refiner использует ту же модель, что и Judge (`gpt-4.1`), а не generator -- для более точного исправления.
+### 10.2. Retry-политика
 
-### 9.2. Кэширование клиентов
+Все вызовы обёрнуты `@retry` от tenacity: 3 попытки, экспоненциальный backoff 1–8 сек.
 
-`ChatOpenAI` инстансы кэшируются по ключу `(model, temperature)`. Это позволяет переиспользовать HTTP-соединения внутри одного прогона.
+### 10.3. Cost tracking
 
-### 9.3. Retry-политика
-
-Все вызовы `ainvoke` обёрнуты `@retry` от tenacity:
-
-```python
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(min=1, max=8),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
-```
-
-3 попытки, экспоненциальный backoff 1-8 сек. После 3 неудач -- exception пробрасывается выше (в агент), где обрабатывается fallback'ом.
+Каждый LLM-вызов записывает usage (prompt/completion tokens, cost_usd) в `llm_usage` через `_extract_usage()`. Агрегация: per-example и per-run.
 
 ---
 
-## 10. Конфигурация
+## 11. Конфигурация
 
 **Файл**: `config.py`
 
-Все параметры управляются через `.env` + Pydantic-settings с дефолтами:
+Все параметры через `.env` + Pydantic-settings:
 
-| Параметр | Default | Описание |
+| Параметр | Текущее значение | Описание |
 |---|---|---|
-| `NUM_CANDIDATES` | 8 | Кандидатов в ансамбле |
-| `PRIMARY_CALLS` | 5 | Из них primary-моделью |
-| `SECONDARY_CALLS` | 3 | Из них secondary-моделью |
+| `NUM_CANDIDATES` | 5 | Кандидатов в ансамбле (complex/unknown) |
+| `PRIMARY_CALLS` | 3 | Из них primary-моделью |
+| `SECONDARY_CALLS` | 2 | Из них secondary-моделью |
+| `MODERATE_NUM_CANDIDATES` | 2 | Кандидатов для moderate |
+| `MODERATE_PRIMARY_CALLS` | 2 | Primary для moderate |
+| `MODERATE_SECONDARY_CALLS` | 0 | Secondary для moderate |
+| `SIMPLE_SKIP_JUDGE_WHEN_VALID` | true | Cheap path для simple |
+| `QUERY_SKETCHER_ENABLED` | true | Включить/выключить скетчер |
 | `SELECTOR_TOP_K_TABLES` | 15 | Top-K из vector search |
+| `SELECTOR_TOP_K_LEXICAL_TABLES` | 8 | Top-K из lexical search |
 | `SELECTOR_TARGET_TABLES_MIN` | 3 | Минимум таблиц после реранкинга |
-| `SELECTOR_TARGET_TABLES_MAX` | 5 | Максимум таблиц после реранкинга |
+| `SELECTOR_TARGET_TABLES_MAX` | 5 | Максимум таблиц |
 | `LLM_TEMPERATURE_PRIMARY` | 0.2 | Температура primary-генератора |
 | `LLM_TEMPERATURE_SECONDARY` | 0.6 | Температура secondary-генератора |
-| `LLM_TEMPERATURE_JUDGE` | 0.0 | Температура judge и refiner |
-| `LLM_MAX_TOKENS` | 1024 | Лимит токенов ответа LLM |
-| `RETRY_ATTEMPTS` | 3 | Retry при сбое LLM |
+| `LLM_MAX_TOKENS` | 2048 | Лимит токенов ответа LLM |
+| `LLM_TIMEOUT_SECONDS` | 180 | Timeout LLM-вызова |
 | `MAX_REFINE_ATTEMPTS` | 3 | Макс. итераций refiner |
 | `EXECUTION_TIMEOUT_SECONDS` | 20 | Timeout исполнения SQL |
 | `FEW_SHOT_EXAMPLES_PER_CANDIDATE` | 2 | Few-shot примеров на кандидата |
-| `FEW_SHOT_SEED` | 42 | Seed для детерминированного сэмплирования |
+| `FEW_SHOT_SEMANTIC_RETRIEVAL` | false | Семантический retrieval few-shot |
 
 ---
 
-## 11. Поток данных (Data Flow)
+## 12. Метрики оценки
 
-Полная цепочка трансформаций для одного вопроса:
+**Файл**: `evaluation/metrics.py`
 
-```
-Вход: question="How many singers from France?", db_id="concert_singer"
+### 12.1. Execution Accuracy (EX)
 
-1. Selector:
-   tables.json -> parse -> schema{tables, columns, fk, pk, samples}
-   schema -> ChromaDB index (one-time per db_id)
-   question -> ChromaDB query -> top-15 candidates
-   candidates -> LLM rerank -> 3-5 selected tables
-   selected tables -> filter schema -> to_mschema() -> filtered_schema
+Официальный алгоритм Spider `result_eq` (порт из `taoyds/test-suite-sql-eval`):
+- Поиск допустимой перестановки колонок между predicted и gold результатами
+- Multiset (bag) семантика для строк (если gold SQL не содержит ORDER BY)
+- Строгий порядок строк только при наличии ORDER BY в gold SQL
 
-2. Decomposer:
-   question -> LLM -> {"complexity": "simple", "sub_questions": []}
+### 12.2. Exact Match (EM)
 
-3. Generator (x8 параллельно):
-   question + complexity + sub_questions + filtered_schema + few_shot[i]
-   -> LLM[role_i] -> raw_sql -> _extract_sql() -> candidate_i
+AST-based нормализация через `sqlglot`:
+- Парсинг в AST (SQLite dialect)
+- Normalize identifiers (lowercase)
+- Resolve алиасов (`T1.Name` → `teacher.name`)
+- Strip qualifier для single-table запросов
+- Fallback на строковое сравнение при ошибке парсинга
 
-4. Execution Filter:
-   candidate_i -> execute on SQLite -> success/fail
-   -> valid_candidates (только успешные)
-
-5. Judge:
-   question + filtered_schema + valid_candidates
-   -> LLM(gpt-4.1) -> {"best_index": 2, "reasoning": "..."}
-   -> best_sql = valid_candidates[2]
-
-6. Refiner:
-   best_sql -> execute on SQLite
-   -> success? -> final_sql = best_sql, done
-   -> fail? -> LLM fix -> new_sql -> retry (до 3 раз)
-
-Выход: final_sql="SELECT COUNT(*) FROM singer WHERE Country = 'France';"
-```
+Наш EM строже официального Spider EM (который игнорирует значения и сравнивает компонентно).
 
 ---
 
-## 12. Обработка ошибок и устойчивость
+## 13. Обработка ошибок и устойчивость
 
-Каждая стадия реализует паттерн "controlled degradation":
+Каждая стадия реализует "controlled degradation":
 
 | Стадия | При ошибке | Pipeline продолжает? |
 |---|---|---|
-| Selector | LLM rerank не распарсился | Да, fallback к top vector candidates |
-| Selector | Vector search пустой | Да, используется полная схема |
-| Selector | Критический exception | Нет, early exit в END |
-| Decomposer | JSON не распарсился | Да, complexity="unknown", sub_questions=[] |
-| Decomposer | Exception | Да, pipeline продолжает (нет conditional edge) |
-| Generator | Часть кандидатов пустые | Да, фильтрация пустых, остальные идут дальше |
-| Generator | Все кандидаты пустые | Нет, early exit в END |
-| Exec Filter | Часть кандидатов невалидны | Да, valid_candidates = только успешные |
-| Exec Filter | Все невалидны | Да, judge получит raw candidates как fallback |
+| Selector | LLM rerank не распарсился | Да, fallback к vector candidates |
+| Selector | Vector search пустой | Да, полная схема |
+| Selector | Критический exception | Нет, early exit |
+| Decomposer | JSON не распарсился | Да, complexity="unknown" |
+| Sketcher | JSON не распарсился | Да, structured output repair → fallback sketch |
+| Sketcher | Полный exception | Да, minimal fallback sketch |
+| Sketcher | Disabled | Да, пустой sketch, generator работает без плана |
+| Generator | Часть кандидатов пустые | Да, фильтрация пустых |
+| Generator | Все кандидаты пустые | Нет, early exit |
+| Exec Filter | Refusal SQL обнаружен | Да, кандидат отсеивается |
+| Exec Filter | Schema validation failed | Да, кандидат отсеивается |
+| Exec Filter | Все невалидны | Да, judge получит raw candidates |
 | Judge | JSON не распарсился | Да, fallback к первому кандидату |
 | Judge | LLM exception | Да, fallback к первому кандидату |
-| Refiner | SQL исполнение упало | Да, LLM-коррекция + retry (до 3 раз) |
-| Refiner | LLM-коррекция exception | Да, сохраняет предыдущий SQL, retry |
+| Refiner | SQL execution failed | Да, LLM-коррекция + retry (до 3 раз) |
+| Refiner | LLM-коррекция exception | Да, сохраняет предыдущий SQL |
+
+---
+
+## 14. Benchmark Runner
+
+**Файлы**: `evaluation/run_spider.py`, `evaluation/run_bird.py`
+
+Возможности:
+- `--concurrency N` — параллельное исполнение примеров
+- `--prewarm` — предзагрузка schema cache и vector index
+- `--subset-manifest` — запуск на фиксированном debug subset
+- Per-example hard timeout (default: `llm_timeout * retry_attempts + 120s`)
+- Atomic partial JSON writes каждые 25 примеров
+- Timestamped output files
+
+Ablation runner: `scripts/run_ablation.sh` — подставляет env-переменные из конфиг-файла и запускает на debug subset.
+
+---
+
+## 15. Текущие результаты
+
+### Spider v1 dev (полный набор, 1034 примера)
+
+| Метрика | Значение |
+|---|---|
+| **Execution Accuracy (EX)** | **72.92%** |
+| **Exact Match (EM)** | **29.11%** |
+| Errors | 24 (2.3%) |
+| Valid SQL Rate | ~97.7% |
+| Avg time/example | 4.49s |
+| Total cost | $67.78 |
+| Total time | 1:17:24 |
+| Concurrency | 12 |
+
+### Сравнение с baseline
+
+| | Baseline (single-model) | Multi-agent pipeline | Дельта |
+|---|---|---|---|
+| **EX** | 64.22% | **72.92%** | **+8.7 ppt** |
+| **EM** | ~21% (naive) | **29.11%** (AST) | **+8 ppt** |
+| **Errors** | 45 (4.4%) | 24 (2.3%) | **−47%** |
+| **Speed** | 15.27s/q | 4.49s/q | **3.4× faster** |
+
+### Model stack
+
+| Роль | Модель | Вызовов/пример |
+|---|---|---|
+| Sketcher | gemini-2.5-pro | 1 (+1 repair при необходимости) |
+| Primary generator | gemini-2.5-pro | 3 |
+| Secondary generator | gpt-oss-120b | 2 |
+| Judge | gpt-4.1 | 1 |
+| Refiner | gpt-4.1 | 0–3 |
+| Embeddings | text-embedding-3-large | ~3–5 |
