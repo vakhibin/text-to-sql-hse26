@@ -155,36 +155,45 @@ text_to_sql_agent/
 
 # Текущие результаты
 
-## Spider dev: multi-agent run
+## Spider dev: best full run so far
 
-Статус: `practically completed`. Прогон дошел до `1033/1034`, после чего последний хвост завис до финальной записи JSON. Зафиксированные метрики ниже используются как фактический итог этого запуска.
+На данный момент лучшим рабочим full-dev прогоном является дешёвый ablation-конфиг с сильным sketcher/judge и дешёвыми генераторами.
 
 ### Конфигурация запуска
 
-- Command: `./.venv/bin/python -m text_to_sql_agent.evaluation.run_spider --concurrency 12 --prewarm`
-- Primary generator: `google/gemini-2.5-pro`
-- Secondary generator: `openai/gpt-oss-120b`
-- Judge: `openai/gpt-4.1`
+- Command: `./scripts/run_ablation.sh configs/ablation/cheap_gen_more_candidates.env`
+- Primary generator: `google/gemma-4-26b-a4b-it`
+- Secondary generator: `qwen/qwen3.5-35b-a3b`
+- Query sketcher: `google/gemini-2.5-pro`
+- Judge / Refiner: `openai/gpt-4.1`
 - Embeddings: `openai/text-embedding-3-large`
 - Candidate budget:
   - `complex/unknown`: `5` (`3` primary + `2` secondary)
   - `moderate`: `2` (`2` primary)
   - `simple`: skip judge when a valid candidate already exists
+- Few-shot:
+  - `FEW_SHOT_EXAMPLES_PER_CANDIDATE=10`
+  - `FEW_SHOT_SEMANTIC_RETRIEVAL=false`
 
-### Зафиксированные метрики на момент остановки
+### Зафиксированные метрики
 
-- Progress: `1033/1034`
-- Execution Accuracy (EX): `69%`
-- Exact Match (EM): `21%`
-- Error count: `45`
-- Throughput snapshot: `1:24:20<00:15, 15.27s/q`
-- Summary file: `outputs/spider_v1_summary_practical_latest.json`
+- Progress: `1034/1034`
+- Execution Accuracy (EX): `72.34%`
+- Exact Match (EM): `33.66%`
+- Error count: `28`
+- Prewarm: `29.02s`
+- Total eval time: `1:01:37`
+- Avg/example: `3.58s`
+- Total cost: `$21.98`
+- Summary file: `outputs/ablation_cheap_gen_more_candidates_20260407_204301_20260407_204302.json`
 
 ### Интерпретация
 
-- По текущему тренду этот запуск выглядел лучше baseline по `EX`.
-- Последний хвост был испорчен нехваткой кредитов, но на итоговые метрики это уже вряд ли влияло существенно.
-- Для строгой повторяемости все равно полезно позже сделать еще один полный чистый прогон без `402` ошибок.
+- Этот конфиг почти не уступил более дорогому full-dev прогону по `EX` (`72.34%` vs `72.92%`), но оказался примерно в `3x` дешевле (`$21.98` vs `$67.78`).
+- `EM` вырос до `33.66%`, что лучше предыдущего дорогого full-dev прогона (`29.11%`).
+- Прогон заметно быстрее: `3.58s/example` против `4.49s/example`.
+- Главные источники remaining errors кластерные: `dog_kennels`, `car_1`, `student_transcripts_tracking`.
+- Следующий шаг перед prompt-tuning: структурный разбор проблемных БД и типовых failure modes.
 
 ### Ближайший план экспериментов
 

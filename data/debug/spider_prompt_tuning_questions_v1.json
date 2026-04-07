@@ -1,0 +1,16 @@
+[
+  "What are the names of the dogs for which the owner spent more than 1000 for treatment?",
+  "Tell me the owner id and last name of the owner who spent the most on treatments of his or her dogs.",
+  "Give me the description of the treatment type whose total cost is the lowest.",
+  "Find the id and cell phone of the professionals who operate two or more types of treatments.",
+  "Which professionals have operated a treatment that costs less than the average? Give me theor first names and last names.",
+  "What are the cost and treatment type description of each treatment?",
+  "Show me the cost of the most recently performed treatment.",
+  "List the first name of all the professionals along with the description of the treatment they have done.",
+  "What are each professional's first name and description of the treatment they have performed?",
+  "Find the model of the car whose weight is below the average weight.",
+  "What is the largest amount of horsepower for the models with 3 cylinders and what make is it?",
+  "Which distinctive models are produced by maker with the full name General Motors or weighing more than 3500?",
+  "For a volvo model, how many cylinders does the version with least accelerate have?",
+  "What are the different models wthat are lighter than 3500 but were not built by the Ford Motor Company?"
+]
