@@ -15,9 +15,8 @@ def build_refiner_prompt(
     query_sketch_text: str,
     failed_sql: str,
     execution_error: str,
-    judge_reasoning: str,
-    judge_confidence: str,
-    judge_issues: list[str],
+    selection_reasoning: str,
+    selection_confidence: str,
     validation_errors: list[str],
     validation_warnings: list[str],
     selected_candidate_summary: str,
@@ -33,14 +32,13 @@ Retrieved schema candidates:
 
     evidence_block = evidence.strip() if evidence and evidence.strip() else "- (none)"
     query_sketch_block = query_sketch_text.strip() if query_sketch_text.strip() else "- (none)"
-    judge_issues_block = ", ".join(judge_issues) if judge_issues else "- (none)"
     validation_errors_block = "\n".join(f"- {item}" for item in validation_errors) if validation_errors else "- (none)"
     validation_warnings_block = "\n".join(f"- {item}" for item in validation_warnings) if validation_warnings else "- (none)"
     failed_candidates_block = "\n".join(f"- {item}" for item in failed_candidate_summaries) if failed_candidate_summaries else "- (none)"
 
     return f"""
 You are an expert SQLite SQL fixer.
-Given a selected SQL query plus execution, validation, and judge feedback, produce a corrected SQL query.
+Given a selected SQL query plus execution and validation feedback, produce a corrected SQL query.
 Return ONLY SQL with no markdown or explanation.
 
 Question:
@@ -60,10 +58,9 @@ Selected mSchema:
 Current SQL:
 {failed_sql}
 
-Judge critique:
-- confidence: {judge_confidence}
-- issues: {judge_issues_block}
-- reasoning: {judge_reasoning or "- (none)"}
+Selection context:
+- confidence: {selection_confidence}
+- reasoning: {selection_reasoning or "- (none)"}
 
 Selected candidate structural summary:
 {selected_candidate_summary}
@@ -82,8 +79,8 @@ Other candidate failure summaries:
 
 Repair policy:
 - Preserve valid parts of the SQL when possible; change only what is needed.
-- If judge issues mention output shape or projection order, fix that before making bigger structural changes.
-- If judge issues mention unnecessary joins, prefer the simpler equivalent query.
+- If validation errors mention output shape or projection order, fix that before making bigger structural changes.
+- Prefer the simpler equivalent query when possible.
 - If literals are risky, preserve the exact literal spelling/casing/value from the question, evidence, or schema context.
 
 Before returning SQL, validate it against the provided schema and question:

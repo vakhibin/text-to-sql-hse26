@@ -74,7 +74,6 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
         selected_candidate_diagnostic.get("analysis_summary")
         or summarize_candidate_analysis(analyze_sql_candidate(current_sql))
     )
-    judge_issues = list(state.get("judge_issues", []))
     failed_candidate_summaries = [
         f"candidate {item.get('candidate_index', '-')}: "
         f"execution_error={item.get('execution_error', '-')} | "
@@ -112,8 +111,7 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             "final_sql": current_sql,
             "execution_result": str(execution.rows),
             "error_message": None,
-            "judge_needs_refine": False,
-            "judge_issues": [],
+            "selection_needs_refine": False,
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,
@@ -124,7 +122,6 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             "total_cost_usd": total_cost_usd,
         }
 
-    # Prepare one refinement step after schema validation or execution failure.
     attempts = int(state.get("refine_attempts", 0)) + 1
     next_sql = current_sql
     refine_trigger = execution_error
@@ -138,9 +135,8 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             query_sketch_text=state.get("query_sketch_text", ""),
             failed_sql=current_sql,
             execution_error=refine_trigger,
-            judge_reasoning=state.get("judge_reasoning", ""),
-            judge_confidence=state.get("judge_confidence", "unknown"),
-            judge_issues=judge_issues,
+            selection_reasoning=state.get("selection_reasoning", ""),
+            selection_confidence=state.get("selection_confidence", "unknown"),
             validation_errors=validation.errors,
             validation_warnings=validation.warnings,
             selected_candidate_summary=selected_candidate_summary,
@@ -172,8 +168,7 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
         "execution_result": None,
         "refine_attempts": attempts,
         "error_message": refine_trigger,
-        "judge_needs_refine": False,
-        "judge_issues": [],
+        "selection_needs_refine": False,
         "stage_status": stage_status,
         "stage_timings": {
             **stage_timings,

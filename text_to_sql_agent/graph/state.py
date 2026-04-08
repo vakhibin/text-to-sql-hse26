@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal, Optional, TypedDict
 from uuid import uuid4
 
-StageName = Literal["selector", "sketcher", "generator", "execution_filter", "judge", "refiner"]
+StageName = Literal["selector", "sketcher", "generator", "execution_filter", "voting", "refiner"]
 StageRunStatus = Literal["pending", "running", "success", "failed", "skipped"]
 
 
@@ -32,12 +32,12 @@ class SQLAgentState(TypedDict):
     valid_candidates: list[str]
     candidate_diagnostics: list[dict[str, Any]]
 
-    # Judge
+    # Selection (majority voting)
     best_sql: str
-    judge_reasoning: str
-    judge_confidence: str
-    judge_needs_refine: bool
-    judge_issues: list[str]
+    selection_reasoning: str
+    selection_confidence: str
+    selection_method: str
+    selection_needs_refine: bool
     selected_candidate_diagnostic: dict[str, Any]
 
     # Refiner
@@ -79,14 +79,14 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
         "required_fields": ("valid_candidates", "stage_status"),
         "optional_fields": ("warnings", "stage_timings", "error_message", "candidate_diagnostics"),
     },
-    "judge": {
-        "required_fields": ("best_sql", "judge_reasoning", "stage_status"),
+    "voting": {
+        "required_fields": ("best_sql", "selection_reasoning", "stage_status"),
         "optional_fields": (
             "warnings",
             "stage_timings",
-            "judge_confidence",
-            "judge_needs_refine",
-            "judge_issues",
+            "selection_confidence",
+            "selection_method",
+            "selection_needs_refine",
             "selected_candidate_diagnostic",
         ),
     },
@@ -104,7 +104,7 @@ def default_stage_status() -> dict[StageName, StageRunStatus]:
         "sketcher": "pending",
         "generator": "pending",
         "execution_filter": "pending",
-        "judge": "pending",
+        "voting": "pending",
         "refiner": "pending",
     }
 
@@ -116,7 +116,7 @@ def default_stage_timings() -> dict[StageName, float]:
         "sketcher": 0.0,
         "generator": 0.0,
         "execution_filter": 0.0,
-        "judge": 0.0,
+        "voting": 0.0,
         "refiner": 0.0,
     }
 
@@ -144,10 +144,10 @@ def make_initial_state(
         "valid_candidates": [],
         "candidate_diagnostics": [],
         "best_sql": "",
-        "judge_reasoning": "",
-        "judge_confidence": "unknown",
-        "judge_needs_refine": False,
-        "judge_issues": [],
+        "selection_reasoning": "",
+        "selection_confidence": "unknown",
+        "selection_method": "",
+        "selection_needs_refine": False,
         "selected_candidate_diagnostic": {},
         "final_sql": "",
         "execution_result": None,

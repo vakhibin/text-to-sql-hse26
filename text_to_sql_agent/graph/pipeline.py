@@ -5,7 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.agents.execution_filter import run_execution_filter
 from text_to_sql_agent.agents.generator import run_generator
-from text_to_sql_agent.agents.judge import run_judge
+from text_to_sql_agent.agents.voting import run_voting
 from text_to_sql_agent.agents.query_sketcher import run_query_sketcher
 from text_to_sql_agent.agents.refiner import run_refiner
 from text_to_sql_agent.agents.selector import run_selector
@@ -27,15 +27,13 @@ def _route_after_generator(state: SQLAgentState) -> str:
 
 
 def _route_after_execution_filter(state: SQLAgentState) -> str:
-    """Route to judge when candidates survive, otherwise stop."""
-    if state.get("best_sql"):
-        return "refiner"
+    """Route to voting when candidates survive, otherwise stop."""
     if state.get("valid_candidates") or state.get("candidates"):
-        return "judge"
+        return "voting"
     return "finish"
 
 
-def _route_after_judge(state: SQLAgentState) -> str:
+def _route_after_voting(state: SQLAgentState) -> str:
     """Refiner needs a selected SQL candidate."""
     if state.get("best_sql"):
         return "refiner"
@@ -52,14 +50,14 @@ def _route_after_refiner(state: SQLAgentState) -> str:
 
 
 def build_graph():
-    """Build StateGraph wiring for five-stage pipeline (no decomposer)."""
+    """Build StateGraph wiring: selector → sketcher → generator → exec_filter → voting → refiner."""
     graph = StateGraph(SQLAgentState)
 
     graph.add_node("selector", run_selector)
     graph.add_node("sketcher", run_query_sketcher)
     graph.add_node("generator", run_generator)
     graph.add_node("execution_filter", run_execution_filter)
-    graph.add_node("judge", run_judge)
+    graph.add_node("voting", run_voting)
     graph.add_node("refiner", run_refiner)
 
     graph.add_edge(START, "selector")
@@ -77,11 +75,11 @@ def build_graph():
     graph.add_conditional_edges(
         "execution_filter",
         _route_after_execution_filter,
-        {"judge": "judge", "refiner": "refiner", "finish": END},
+        {"voting": "voting", "finish": END},
     )
     graph.add_conditional_edges(
-        "judge",
-        _route_after_judge,
+        "voting",
+        _route_after_voting,
         {"refiner": "refiner", "finish": END},
     )
     graph.add_conditional_edges(

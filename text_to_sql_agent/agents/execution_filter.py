@@ -110,6 +110,7 @@ async def run_execution_filter(state: SQLAgentState) -> SQLAgentState:
                 "sql": sql,
                 "execution_success": execution.success,
                 "execution_error": execution.error or "",
+                "execution_rows": execution.rows if execution.success else None,
                 "schema_valid": validation.is_valid,
                 "schema_errors": validation.errors,
                 "schema_warnings": validation.warnings,
