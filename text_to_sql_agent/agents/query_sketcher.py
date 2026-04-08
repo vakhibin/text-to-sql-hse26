@@ -214,7 +214,6 @@ def _format_query_sketch_text(sketch: dict[str, Any]) -> str:
 
 def _build_minimal_fallback_sketch(state: SQLAgentState) -> tuple[dict[str, Any], str]:
     filtered_schema = state.get("filtered_schema", "")
-    sub_questions = state.get("sub_questions", [])
     table_names = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\(", filtered_schema)
     unique_tables: list[str] = []
     for table in table_names:
@@ -250,8 +249,6 @@ def _build_minimal_fallback_sketch(state: SQLAgentState) -> tuple[dict[str, Any]
         ordering.append("ordering may be needed")
     if any(keyword in question_lower for keyword in ("after", "before", "between", "not", "only", "from", "in")):
         filters.append("apply the question's filter conditions carefully")
-    if sub_questions:
-        generation_hints.extend(sub_questions[:3])
     if candidate_tables:
         generation_hints.append("Start from the first candidate table unless the question clearly needs a join.")
 
@@ -384,8 +381,6 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
         prompt = build_query_sketcher_prompt(
             question=state["question"],
             evidence=state.get("evidence"),
-            complexity=state.get("complexity", "unknown"),
-            sub_questions=state.get("sub_questions", []),
             filtered_schema=state.get("filtered_schema", ""),
             retrieved_schema_context=state.get("retrieved_schema_context", ""),
         )

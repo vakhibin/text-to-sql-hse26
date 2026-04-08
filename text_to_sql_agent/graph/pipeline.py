@@ -3,7 +3,6 @@
 from langgraph.graph import END, START, StateGraph
 
 from text_to_sql_agent.config import settings
-from text_to_sql_agent.agents.decomposer import run_decomposer
 from text_to_sql_agent.agents.execution_filter import run_execution_filter
 from text_to_sql_agent.agents.generator import run_generator
 from text_to_sql_agent.agents.judge import run_judge
@@ -17,7 +16,7 @@ def _route_after_selector(state: SQLAgentState) -> str:
     """Stop early when schema selection cannot proceed."""
     if state.get("stage_status", {}).get("selector") == "failed":
         return "finish"
-    return "decomposer"
+    return "sketcher"
 
 
 def _route_after_generator(state: SQLAgentState) -> str:
@@ -28,7 +27,7 @@ def _route_after_generator(state: SQLAgentState) -> str:
 
 
 def _route_after_execution_filter(state: SQLAgentState) -> str:
-    """Skip judge on cheap path, otherwise judge surviving candidates."""
+    """Route to judge when candidates survive, otherwise stop."""
     if state.get("best_sql"):
         return "refiner"
     if state.get("valid_candidates") or state.get("candidates"):
@@ -53,11 +52,10 @@ def _route_after_refiner(state: SQLAgentState) -> str:
 
 
 def build_graph():
-    """Build initial StateGraph wiring for six-stage pipeline."""
+    """Build StateGraph wiring for five-stage pipeline (no decomposer)."""
     graph = StateGraph(SQLAgentState)
 
     graph.add_node("selector", run_selector)
-    graph.add_node("decomposer", run_decomposer)
     graph.add_node("sketcher", run_query_sketcher)
     graph.add_node("generator", run_generator)
     graph.add_node("execution_filter", run_execution_filter)
@@ -68,9 +66,8 @@ def build_graph():
     graph.add_conditional_edges(
         "selector",
         _route_after_selector,
-        {"decomposer": "decomposer", "finish": END},
+        {"sketcher": "sketcher", "finish": END},
     )
-    graph.add_edge("decomposer", "sketcher")
     graph.add_edge("sketcher", "generator")
     graph.add_conditional_edges(
         "generator",
@@ -94,4 +91,3 @@ def build_graph():
     )
 
     return graph.compile()
-

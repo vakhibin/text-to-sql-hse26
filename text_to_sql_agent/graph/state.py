@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import Any, Literal, Optional, TypedDict
 from uuid import uuid4
 
-StageName = Literal["selector", "decomposer", "sketcher", "generator", "execution_filter", "judge", "refiner"]
+StageName = Literal["selector", "sketcher", "generator", "execution_filter", "judge", "refiner"]
 StageRunStatus = Literal["pending", "running", "success", "failed", "skipped"]
-ComplexityLevel = Literal["simple", "moderate", "complex", "unknown"]
 
 
 class SQLAgentState(TypedDict):
@@ -24,11 +23,7 @@ class SQLAgentState(TypedDict):
     filtered_schema: str
     retrieved_schema_context: str
 
-    # Decomposer
-    complexity: ComplexityLevel
-    sub_questions: list[str]
-    decomposition_reasoning: str
-    decomposition_risk_flags: dict[str, Any]
+    # Sketcher
     query_sketch: dict[str, Any]
     query_sketch_text: str
 
@@ -72,10 +67,6 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
         "required_fields": ("full_schema", "filtered_schema", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
     },
-    "decomposer": {
-        "required_fields": ("complexity", "sub_questions", "stage_status"),
-        "optional_fields": ("warnings", "stage_timings", "decomposition_reasoning", "decomposition_risk_flags"),
-    },
     "sketcher": {
         "required_fields": ("query_sketch", "query_sketch_text", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
@@ -110,7 +101,6 @@ def default_stage_status() -> dict[StageName, StageRunStatus]:
     """Default stage status map for new pipeline run."""
     return {
         "selector": "pending",
-        "decomposer": "pending",
         "sketcher": "pending",
         "generator": "pending",
         "execution_filter": "pending",
@@ -123,7 +113,6 @@ def default_stage_timings() -> dict[StageName, float]:
     """Default stage timing map for new pipeline run."""
     return {
         "selector": 0.0,
-        "decomposer": 0.0,
         "sketcher": 0.0,
         "generator": 0.0,
         "execution_filter": 0.0,
@@ -149,10 +138,6 @@ def make_initial_state(
         "full_schema": {},
         "filtered_schema": "",
         "retrieved_schema_context": "",
-        "complexity": "unknown",
-        "sub_questions": [],
-        "decomposition_reasoning": "",
-        "decomposition_risk_flags": {},
         "query_sketch": {},
         "query_sketch_text": "",
         "candidates": [],
@@ -175,4 +160,3 @@ def make_initial_state(
         "llm_usage": [],
         "total_cost_usd": 0.0,
     }
-

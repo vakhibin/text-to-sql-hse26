@@ -10,16 +10,11 @@ def build_query_sketcher_prompt(
     *,
     question: str,
     evidence: str | None,
-    complexity: str,
-    sub_questions: list[str],
     filtered_schema: str,
     retrieved_schema_context: str,
 ) -> str:
     """Build a strong schema-grounded prompt for query sketching."""
     evidence_block = f"Evidence:\n{evidence}\n\n" if evidence else ""
-    sub_questions_block = (
-        "\n".join(f"- {item}" for item in sub_questions) if sub_questions else "- (none)"
-    )
     broader_schema_block = (
         f"Additional retrieved schema context:\n{retrieved_schema_context}\n\n"
         if retrieved_schema_context and retrieved_schema_context != filtered_schema
@@ -39,13 +34,7 @@ Inputs:
 Question:
 {question}
 
-{evidence_block}Complexity:
-{complexity}
-
-Decomposition hints:
-{sub_questions_block}
-
-Primary selected schema:
+{evidence_block}Primary selected schema:
 {filtered_schema}
 
 {broader_schema_block}Rules:

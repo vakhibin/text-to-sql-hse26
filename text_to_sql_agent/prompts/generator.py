@@ -11,9 +11,6 @@ def build_generator_prompt(
     question: str,
     evidence: str | None,
     filtered_schema: str,
-    complexity: str,
-    sub_questions: list[str],
-    decomposition_risk_flags: dict[str, object],
     query_sketch_text: str,
     few_shot_examples: list[dict[str, str]],
 ) -> str:
@@ -29,17 +26,8 @@ def build_generator_prompt(
             )
         few_shot_block = "Few-shot examples:\n" + "\n\n".join(chunks) + "\n\n"
 
-    sub_questions_block = ""
-    if sub_questions:
-        sub_questions_block = "\n".join(f"- {item}" for item in sub_questions)
-    else:
-        sub_questions_block = "- (none)"
-
     query_sketch_block = query_sketch_text.strip() if query_sketch_text.strip() else "- (none)"
     evidence_block = evidence.strip() if evidence and evidence.strip() else "- (none)"
-    risk_flags_block = ", ".join(
-        f"{key}={value}" for key, value in decomposition_risk_flags.items()
-    ) or "- (none)"
 
     return f"""
 You are an expert SQLite SQL generator.
@@ -48,17 +36,8 @@ Return ONLY SQL without markdown, explanations, or comments.
 Question:
 {question}
 
-Complexity:
-{complexity}
-
-Decomposition hints:
-{sub_questions_block}
-
 Evidence:
 {evidence_block}
-
-Routing risk flags:
-{risk_flags_block}
 
 Query sketch:
 {query_sketch_block}
@@ -88,9 +67,7 @@ mSchema:
 19) When joins can duplicate entity rows but the question asks for unique entities/names/descriptions rather than events/records, use DISTINCT to avoid duplicate answers.
 20) When the question asks for "all information about X" or "all details of X" and X maps to a single table, use SELECT * FROM that_table with appropriate WHERE filters. Do not enumerate columns manually or join related tables.
 21) Preserve literal values faithfully. If the question or evidence provides an exact string/code/value, keep that value instead of normalizing or paraphrasing it.
-22) When `literal_filter_risk=true`, be extra careful with literal spelling, spacing, casing, and code values.
-23) End query with semicolon.
+22) End query with semicolon.
 
 SQL:
 """.strip()
-

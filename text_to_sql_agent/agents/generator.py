@@ -32,7 +32,7 @@ def _build_messages(prompt: str) -> Sequence[tuple[str, str]]:
 
 
 async def run_generator(state: SQLAgentState) -> SQLAgentState:
-    """Generate N SQL candidates asynchronously with 5/3 role split."""
+    """Generate N SQL candidates asynchronously."""
     started = time.perf_counter()
     stage_status = dict(state.get("stage_status", {}))
     stage_timings = dict(state.get("stage_timings", {}))
@@ -47,12 +47,8 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
         if not pool:
             warnings.append("generator: few-shot pool unavailable; using zero-shot prompts")
 
-        complexity = state.get("complexity", "unknown")
-        num_candidates, roles = router.generator_plan_for_complexity(complexity)
-        if complexity == "moderate":
-            warnings.append(
-                "generator: using reduced ensemble budget for moderate complexity"
-            )
+        num_candidates = settings.num_candidates
+        roles = router.generator_roles()
 
         async def _run_one(idx: int) -> tuple[str, dict[str, object]]:
             role = roles[idx % len(roles)]
@@ -68,9 +64,6 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 question=state["question"],
                 evidence=state.get("evidence"),
                 filtered_schema=state.get("filtered_schema", ""),
-                complexity=state.get("complexity", "unknown"),
-                sub_questions=state.get("sub_questions", []),
-                decomposition_risk_flags=state.get("decomposition_risk_flags", {}),
                 query_sketch_text=state.get("query_sketch_text", ""),
                 few_shot_examples=examples,
             )
@@ -118,4 +111,3 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
             "llm_usage": llm_usage,
             "total_cost_usd": total_cost_usd,
         }
-

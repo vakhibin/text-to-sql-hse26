@@ -12,7 +12,6 @@ from langchain_openai import ChatOpenAI
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from text_to_sql_agent.config import settings
-from text_to_sql_agent.graph.state import ComplexityLevel
 from text_to_sql_agent.tools.observability import (
     LLMUsageRecord,
     start_langfuse_generation,
@@ -263,28 +262,6 @@ class LLMRouter:
         primary = [ModelRole.GENERATOR_PRIMARY] * settings.primary_calls
         secondary = [ModelRole.GENERATOR_SECONDARY] * settings.secondary_calls
         return [*primary, *secondary]
-
-    def generator_plan_for_complexity(
-        self,
-        complexity: ComplexityLevel | str | None,
-    ) -> tuple[int, list[ModelRole]]:
-        """Return candidate budget and model routing for a complexity bucket."""
-        normalized = str(complexity or "unknown").lower().strip()
-        if normalized == "moderate":
-            num_candidates = settings.moderate_num_candidates
-            primary_calls = settings.moderate_primary_calls
-            secondary_calls = settings.moderate_secondary_calls
-        else:
-            num_candidates = settings.num_candidates
-            primary_calls = settings.primary_calls
-            secondary_calls = settings.secondary_calls
-
-        roles = ([ModelRole.GENERATOR_PRIMARY] * primary_calls) + (
-            [ModelRole.GENERATOR_SECONDARY] * secondary_calls
-        )
-        if not roles:
-            roles = [ModelRole.GENERATOR_PRIMARY]
-        return max(1, num_candidates), roles
 
     async def abatch_generate(
         self,

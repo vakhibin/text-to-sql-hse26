@@ -36,53 +36,6 @@ def _is_refusal_sql(sql: str) -> bool:
     return False
 
 
-def _eligible_for_simple_cheap_path(
-    state: SQLAgentState,
-    candidate_diagnostic: dict[str, object] | None,
-) -> bool:
-    """Allow the simple cheap path based on actual SQL structure, not LLM risk flags."""
-    if not candidate_diagnostic:
-        return False
-    if not bool(candidate_diagnostic.get("execution_success")):
-        return False
-    if candidate_diagnostic.get("schema_errors"):
-        return False
-
-    analysis = candidate_diagnostic.get("analysis", {})
-    if not isinstance(analysis, dict):
-        return False
-    if analysis.get("parse_error"):
-        return False
-    if int(analysis.get("join_count", 0)) > 0:
-        return False
-    if bool(analysis.get("has_subquery")):
-        return False
-    if str(analysis.get("set_operation", "none")) != "none":
-        return False
-    return True
-
-
-def _simple_candidate_score(state: SQLAgentState, candidate_diagnostic: dict[str, object]) -> tuple[object, ...]:
-    """Prefer the simplest valid candidate that matches the requested output width."""
-    risk_flags = state.get("decomposition_risk_flags", {})
-    target_projection_width = int(risk_flags.get("projection_width", 1) or 1)
-    analysis = candidate_diagnostic.get("analysis", {})
-    if not isinstance(analysis, dict):
-        analysis = {}
-    projection_count = int(analysis.get("projection_count", 0) or 0)
-    return (
-        abs(projection_count - target_projection_width),
-        int(analysis.get("join_count", 0) or 0),
-        int(analysis.get("table_count", 0) or 0),
-        bool(analysis.get("has_aggregation")),
-        bool(analysis.get("has_group_by")),
-        bool(analysis.get("has_subquery")),
-        str(analysis.get("set_operation", "none")) != "none",
-        len(candidate_diagnostic.get("schema_warnings", [])),
-        int(candidate_diagnostic.get("candidate_index", 0) or 0),
-    )
-
-
 async def run_execution_filter(state: SQLAgentState) -> SQLAgentState:
     """Execute candidate SQL queries and keep only valid ones."""
     started = time.perf_counter()
@@ -179,40 +132,11 @@ async def run_execution_filter(state: SQLAgentState) -> SQLAgentState:
         if not valid_candidates:
             warnings.append("execution_filter: no valid candidates after execution")
 
-        best_sql = state.get("best_sql", "")
-        judge_reasoning = state.get("judge_reasoning", "")
-        valid_diagnostics = [
-            diagnostic for diagnostic in candidate_diagnostics if bool(diagnostic.get("execution_success"))
-        ]
-        safe_simple_diagnostics = [
-            diagnostic
-            for diagnostic in valid_diagnostics
-            if _eligible_for_simple_cheap_path(
-                state,
-                diagnostic,
-            )
-        ]
-        if (
-            state.get("complexity") == "simple"
-            and settings.simple_skip_judge_when_valid
-            and safe_simple_diagnostics
-        ):
-            best_diagnostic = min(
-                safe_simple_diagnostics,
-                key=lambda diagnostic: _simple_candidate_score(state, diagnostic),
-            )
-            best_sql = str(best_diagnostic.get("sql", valid_candidates[0]))
-            judge_reasoning = "Skipped judge for safe simple query after execution validation."
-            stage_status["judge"] = "skipped"
-            warnings.append("execution_filter: skipped judge for safe simple query with valid candidate")
-
         stage_status["execution_filter"] = "success"
         return {
             **state,
             "valid_candidates": valid_candidates,
             "candidate_diagnostics": candidate_diagnostics,
-            "best_sql": best_sql,
-            "judge_reasoning": judge_reasoning,
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,
@@ -233,4 +157,3 @@ async def run_execution_filter(state: SQLAgentState) -> SQLAgentState:
             },
             "warnings": [*warnings, f"execution_filter_error: {exc}"],
         }
-

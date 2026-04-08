@@ -20,7 +20,6 @@ class AgentSettings(BaseSettings):
     # Fixed model policy (can be overridden by env if needed)
     generator_model_primary: str = "google/gemini-2.5-pro"
     generator_model_secondary: str = "deepseek/deepseek-chat-v3"
-    decomposer_enabled: bool = True
     query_sketcher_model: str | None = None
     query_sketcher_enabled: bool = True
     judge_model: str = "openai/gpt-4.1"
@@ -38,12 +37,6 @@ class AgentSettings(BaseSettings):
     num_candidates: int = 8
     primary_calls: int = 5
     secondary_calls: int = 3
-    moderate_num_candidates: int = 2
-    moderate_primary_calls: int = 2
-    moderate_secondary_calls: int = 0
-    simple_skip_judge_when_valid: bool = True
-    simple_skip_judge_require_single_table: bool = True
-    simple_skip_judge_max_projection_width: int = 2
     few_shot_examples_per_candidate: int = 2
     few_shot_max_pool_size: int = 3000
     few_shot_seed: int = 42

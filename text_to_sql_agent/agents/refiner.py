@@ -135,7 +135,6 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             evidence=state.get("evidence"),
             filtered_schema=state.get("filtered_schema", ""),
             retrieved_schema_context=state.get("retrieved_schema_context", ""),
-            sub_questions=state.get("sub_questions", []),
             query_sketch_text=state.get("query_sketch_text", ""),
             failed_sql=current_sql,
             execution_error=refine_trigger,

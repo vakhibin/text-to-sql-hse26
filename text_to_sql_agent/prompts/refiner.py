@@ -12,7 +12,6 @@ def build_refiner_prompt(
     evidence: str | None,
     filtered_schema: str,
     retrieved_schema_context: str,
-    sub_questions: list[str],
     query_sketch_text: str,
     failed_sql: str,
     execution_error: str,
@@ -33,7 +32,6 @@ Retrieved schema candidates:
 """.strip()
 
     evidence_block = evidence.strip() if evidence and evidence.strip() else "- (none)"
-    sub_questions_block = "\n".join(f"- {item}" for item in sub_questions) if sub_questions else "- (none)"
     query_sketch_block = query_sketch_text.strip() if query_sketch_text.strip() else "- (none)"
     judge_issues_block = ", ".join(judge_issues) if judge_issues else "- (none)"
     validation_errors_block = "\n".join(f"- {item}" for item in validation_errors) if validation_errors else "- (none)"
@@ -50,9 +48,6 @@ Question:
 
 Evidence:
 {evidence_block}
-
-Decomposition hints:
-{sub_questions_block}
 
 Query sketch:
 {query_sketch_block}
@@ -101,4 +96,3 @@ Before returning SQL, validate it against the provided schema and question:
 
 Output only corrected SQL ending with semicolon.
 """.strip()
-
