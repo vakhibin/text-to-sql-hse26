@@ -104,7 +104,14 @@ It now also feeds routing policy:
 - `moderate`: uses a reduced generator ensemble budget
 - `complex` and `unknown`: stay on the fuller default ensemble
 
+The decomposer can be bypassed with `DECOMPOSER_ENABLED=false`.
+In that mode, downstream stages should treat decomposition outputs conservatively:
+- `complexity = unknown`
+- `sub_questions = []`
+- default empty risk flags
+
 Current runtime knobs live in `.env` / `config.py`:
+- `DECOMPOSER_ENABLED`
 - `NUM_CANDIDATES`, `PRIMARY_CALLS`, `SECONDARY_CALLS`
 - `MODERATE_NUM_CANDIDATES`, `MODERATE_PRIMARY_CALLS`, `MODERATE_SECONDARY_CALLS`
 - `SIMPLE_SKIP_JUDGE_WHEN_VALID`

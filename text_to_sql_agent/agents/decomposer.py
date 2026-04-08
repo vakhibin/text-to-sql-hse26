@@ -6,6 +6,7 @@ import json
 import re
 import time
 
+from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import ComplexityLevel, SQLAgentState
 from text_to_sql_agent.prompts.decomposer import build_decomposer_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
@@ -94,6 +95,25 @@ async def run_decomposer(state: SQLAgentState) -> SQLAgentState:
     warnings = list(state.get("warnings", []))
     llm_usage = list(state.get("llm_usage", []))
     total_cost_usd = float(state.get("total_cost_usd", 0.0))
+
+    if not settings.decomposer_enabled:
+        stage_status["decomposer"] = "skipped"
+        return {
+            **state,
+            "complexity": "unknown",
+            "sub_questions": [],
+            "decomposition_reasoning": "",
+            "decomposition_risk_flags": dict(_DEFAULT_RISK_FLAGS),
+            "stage_status": stage_status,
+            "stage_timings": {
+                **stage_timings,
+                "decomposer": round(time.perf_counter() - started, 4),
+            },
+            "warnings": [*warnings, "decomposer: skipped via DECOMPOSER_ENABLED=false"],
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
+        }
+
     stage_status["decomposer"] = "running"
 
     try:
