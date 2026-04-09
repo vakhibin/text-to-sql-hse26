@@ -4,13 +4,14 @@
 
 ## Что сравнивается
 
-Ниже зафиксированы пять экспериментальных точек:
+Ниже зафиксированы шесть экспериментальных точек:
 
 1. `E1` - лучший на тот момент `balanced low-cost` full Spider dev run.
 2. `E2` - более агрессивный дешёвый конфиг с большим few-shot budget, но без semantic few-shot retrieval.
 3. `E3` - тот же агрессивный дешёвый конфиг, но с semantic few-shot retrieval.
 4. `E4` - E3b конфиг с отключённым decomposer (`DECOMPOSER_ENABLED=false`).
 5. `E5` - полная архитектурная ревизия: decomposer удалён, LLM judge заменён на majority voting.
+6. `E7` - E5 + value linking (детерминистический entity→DB lookup перед sketcher) + tool-augmented refiner.
 
 Важно:
 - `E1` относится к зафиксированному baseline-срезу до новой серии prompt-экспериментов.
@@ -31,6 +32,7 @@
 | `E3b` | full Spider dev (`1034`) | semantic few-shot retrieval переносится на полный benchmark | `72.44%` | `31.53%` | `22` | `4.29s` | `$25.61` |
 | `E4` | full Spider dev (`1034`) | decomposer избыточен при наличии sketcher | `71.66%` | `31.91%` | `20` | `4.94s` | `$31.54` |
 | `E5` | full Spider dev (`1034`) | majority voting вместо LLM judge + без decomposer | `71.28%` | `33.27%` | `29` | `5.04s` | `$29.87` |
+| `E7` | full Spider dev (`1034`) | E5 + value linking + tool-augmented refiner | **`73.60%`** | **`34.62%`** | `53` | `4.82s` | `$29.60` |
 
 ## E1. Balanced Low-Cost Baseline
 
@@ -360,11 +362,108 @@ Decomposer избыточен: query sketcher уже выполняет planning
 
 - `outputs/ablation_cheap_gen_more_candidates_20260408_233142_20260408_233143.json`
 
+## E7. Value Linking + Tool-Augmented Refiner (Architecture v3)
+
+### Scope
+
+- Полный `Spider dev`
+- `1034` примера
+
+### Гипотеза
+
+Две новые компоненты поверх архитектуры v2:
+
+1. **Value linking** — детерминистический этап перед sketcher: извлекает сущности из вопроса (capitalized words, quoted strings, n-grams), ищет их в текстовых колонках SQLite через `= COLLATE NOCASE` (+ `LIKE` только для цитируемых строк). Найденные `db_value` подставляются в промпты sketcher и generator как «verified from database» hints, чтобы генератор использовал точные значения вместо парафразов.
+
+2. **Tool-augmented refiner** — refiner получил три фазы: (a) deterministic AST repair через `sqlglot`, (b) direct SQL execution check, (c) tool-calling LLM loop с инструментами `execute_sql_check`, `get_table_columns`, `list_all_tables`, `validate_sql`, `search_column_values`. Timeout 60s, max 3 tool steps.
+
+### Команда
+
+```bash
+./scripts/run_ablation.sh configs/ablation/cheap_gen_more_candidates.env
+```
+
+### Зафиксированные параметры запуска
+
+Источник: `outputs/ablation_cheap_gen_more_candidates_20260409_233556_20260409_233557.json`
+
+- Primary generator: `google/gemma-4-26b-a4b-it`
+- Secondary generator: `qwen/qwen3.5-35b-a3b`
+- Query sketcher: `google/gemini-2.5-pro`
+- Refiner: `google/gemma-4-31b-it` (tool-calling capable)
+- **Value linking: enabled (deterministic, zero LLM cost)**
+- Selection: majority voting (no LLM)
+- Decomposer: removed
+- `NUM_CANDIDATES=8`
+- `PRIMARY_CALLS=5`
+- `SECONDARY_CALLS=3`
+- `FEW_SHOT_EXAMPLES_PER_CANDIDATE=20`
+- `FEW_SHOT_SEMANTIC_RETRIEVAL=true`
+- Pipeline: `selector → value_linker → sketcher → generator → exec_filter → voting → refiner`
+- Code state: ветка `feat/replace-judge-w-majority-voting`, value linker + tool-augmented refiner
+
+### Метрики
+
+- `EX = 73.60%`
+- `EM = 34.62%`
+- `Errors = 53`
+- `Prewarm = 8.09s`
+- `Eval time = 4984.91s`
+- `Avg/example = 4.82s`
+- `Total cost = $29.60`
+
+### Сравнение с предыдущими точками
+
+| Metric | E1 (balanced baseline) | E5 (voting, no decomposer) | E7 (value linking + tools) | E7 vs E5 | E7 vs E1 |
+|---|---:|---:|---:|---|---|
+| EX | `72.34%` | `71.28%` | **`73.60%`** | **`+2.32 ppt`** | **`+1.26 ppt`** |
+| EM | `33.66%` | `33.27%` | **`34.62%`** | **`+1.35 ppt`** | **`+0.96 ppt`** |
+| Errors | `28` | `29` | `53` | `+24` | `+25` |
+| Avg time | `3.58s` | `5.04s` | `4.82s` | `-0.22s` | `+1.24s` |
+| Cost | `$21.98` | `$29.87` | `$29.60` | `-$0.27` | `+$7.62` |
+
+### Сравнение с old full pipeline (judge=gpt-4.1, генераторы=gemini+gpt-oss)
+
+| Metric | Old full pipeline | E7 (value linking + tools) | Delta |
+|---|---:|---:|---|
+| EX | `72.92%` | **`73.60%`** | **`+0.68 ppt`** |
+| EM | `29.11%` | **`34.62%`** | **`+5.51 ppt`** |
+| Errors | `24` | `53` | `+29` |
+| Avg time | `4.49s` | `4.82s` | `+0.33s` |
+| Cost | `$67.78` | `$29.60` | **`-56%` (2.3x дешевле)** |
+
+### Анализ ошибок
+
+Из 53 ошибок основные категории:
+- **`car_1` schema hallucination** (~18 ошибок): генераторы путают таблицы (`car`, `cars`, `models` вместо `cars_data`, `model_list`, `car_names`) и колонки (`Model`, `horsepower`, `weight` вместо правильных имён). Value linking находит значения, но не предотвращает hallucination table/column names.
+- **`student_transcripts_tracking`** (~10 ошибок): аналогичная проблема — hallucination таблиц и колонок.
+- **`dog_kennels`** (~6 ошибок): hallucination колонки `cost` (реальная колонка: `cost_of_treatment`).
+- **Benchmark timeouts** (~6 ошибок): refiner tool-calling loop не укладывается в 660s example timeout.
+- **UTF-8** (2 ошибки): `wta_1` — encoding issues в данных.
+
+### Ключевой вывод
+
+1. **EX 73.60% — новый лучший результат проекта**, превосходящий как balanced baseline (+1.26 ppt), так и old full pipeline (+0.68 ppt).
+2. **EM 34.62% — новый лучший EM**, лучше old full pipeline на +5.51 ppt.
+3. **Cost $29.60** — в 2.3x дешевле old full pipeline при лучшем качестве.
+4. **Ошибки выросли до 53** — основная причина: tool-calling refiner на gemma-4-31b-it иногда зависает (timeouts), а дешёвые генераторы по-прежнему hallucinate schema identifiers. Value linking помогает с value spelling, но не с table/column naming.
+5. **Value linking impact**: помогает с exact value matching (e.g., `'toyota'` vs `'Toyota'`), но основной прирост EX вероятно связан с комбинацией value hints + AST repair + tool-augmented refiner.
+
+### Направления дальнейшего улучшения
+
+- Снизить timeout-ошибки: уменьшить example timeout или ограничить tool loop ещё жёстче
+- Schema-aware generation: вместо value linking добавить column-name linking (fuzzy match column names из question → schema)
+- Более сильная модель на refiner (или fallback на GPT-4.1 при tool-calling failures)
+
+### Артефакт
+
+- `outputs/ablation_cheap_gen_more_candidates_20260409_233556_20260409_233557.json`
+
 ---
 
 ## Практический вывод для диплома / презентации
 
-На данный момент есть четыре опорные точки:
+На данный момент есть пять опорных точек:
 
 1. `Balanced practical winner (v1 architecture)`
    - `EX 72.34%` / `EM 33.66%` / `$21.98` / `3.58s/example`
@@ -372,7 +471,7 @@ Decomposer избыточен: query sketcher уже выполняет planning
 
 2. `EX-oriented semantic few-shot variant`
    - `EX 72.44%` / `EM 31.53%` / `$25.61` / `4.29s/example`
-   - лучший `EX`, но хуже balance по `EM/cost/speed`
+   - лучший `EX` на старой архитектуре, но хуже balance по `EM/cost/speed`
 
 3. `Component ablation: decomposer removal`
    - `EX 71.66%` / `EM 31.91%` / `$31.54` / `4.94s/example`
@@ -380,8 +479,14 @@ Decomposer избыточен: query sketcher уже выполняет planning
 
 4. `Architecture v2: majority voting + no decomposer`
    - `EX 71.28%` / `EM 33.27%` / `$29.87` / `5.04s/example`
-   - **лучший EM**, **2.3x дешевле** старого full pipeline ($67.78), zero LLM calls для selection
+   - **2.3x дешевле** старого full pipeline ($67.78), zero LLM calls для selection
    - подтверждает жизнеспособность voting как замены LLM judge
+
+5. `Architecture v3: value linking + tool-augmented refiner`
+   - **`EX 73.60%`** / **`EM 34.62%`** / `$29.60` / `4.82s/example`
+   - **новый лучший EX и EM за всю историю проекта**
+   - **2.3x дешевле** old full pipeline при лучшем качестве
+   - value linking + AST repair + tool-calling refiner дали суммарный прирост **+2.32 ppt EX** vs E5
 
 ## Короткие формулировки для слайдов
 
@@ -389,18 +494,21 @@ Decomposer избыточен: query sketcher уже выполняет planning
 - `E2`: увеличение few-shot контекста до `20` без semantic retrieval не дало существенного прироста на targeted subset.
 - `E3`: semantic few-shot retrieval улучшил локальный subset и дал лучший `EX` на full Spider dev (`72.44`), но ухудшил `EM` и увеличил стоимость.
 - `E4`: отключение decomposer дало `EX 71.66%` (`-0.78 ppt` vs E3b) — разница в пределах шума. Decomposer безопасно убирается.
-- `E5`: замена LLM judge на majority voting дала `EX 71.28%` с **лучшим EM (33.27%)** и **2.3x экономией** vs old full pipeline. Voting жизнеспособен.
+- `E5`: замена LLM judge на majority voting дала `EX 71.28%` с EM 33.27% и 2.3x экономией vs old full pipeline. Voting жизнеспособен.
+- `E7`: value linking + tool-augmented refiner дали **лучший результат: `73.60 EX / 34.62 EM / $29.60`**. Первое превышение old full pipeline по EX при 2.3x экономии.
 
 ## Архитектурный вывод
 
-Результаты E4+E5 подтверждают две ключевые гипотезы:
+Результаты E1–E7 подтверждают ключевые гипотезы:
 
 1. **Decomposer избыточен** при наличии query sketcher. Удаление не вызвало значимой регрессии EX.
 
 2. **LLM judge можно заменить majority voting** без потери качества. Voting даже улучшил EM, предпочитая простейший SQL из группы-победителя.
 
-Текущая архитектура v2 (`selector → sketcher → generator → exec_filter → voting → refiner`):
-- 6 стадий вместо 7
+3. **Детерминистические pre-generation инструменты (value linking) и post-generation инструменты (AST repair, tool-augmented refiner) дают больше прироста, чем дополнительные LLM-этапы**, при нулевой или минимальной дополнительной стоимости.
+
+Текущая архитектура v3 (`selector → value_linker → sketcher → generator → exec_filter → voting → refiner`):
+- 7 стадий (из них 3 LLM, 4 детерминистических)
 - Только 3 LLM-роли: sketcher, generators, refiner
-- Selection — чисто детерминистический
-- Следующий вектор улучшения: AST repair + value linking + tool-augmented refiner
+- Selection и value linking — чисто детерминистические
+- Следующие векторы улучшения: column-name linking, более жёсткий timeout refiner, fallback на сильную модель при tool-calling failures

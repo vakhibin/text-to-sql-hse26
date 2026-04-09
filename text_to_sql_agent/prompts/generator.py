@@ -13,6 +13,7 @@ def build_generator_prompt(
     filtered_schema: str,
     query_sketch_text: str,
     few_shot_examples: list[dict[str, str]],
+    value_hints_text: str = "",
 ) -> str:
     """Build SQL generation prompt with optional few-shot examples."""
     few_shot_block = ""
@@ -28,6 +29,7 @@ def build_generator_prompt(
 
     query_sketch_block = query_sketch_text.strip() if query_sketch_text.strip() else "- (none)"
     evidence_block = evidence.strip() if evidence and evidence.strip() else "- (none)"
+    value_hints_block = f"\n{value_hints_text}\n" if value_hints_text else ""
 
     return f"""
 You are an expert SQLite SQL generator.
@@ -44,7 +46,7 @@ Query sketch:
 
 mSchema:
 {filtered_schema}
-
+{value_hints_block}
 {few_shot_block}Rules:
 1) Use ONLY the tables and columns listed in the mSchema above. Do NOT invent or assume tables/columns that are not explicitly listed.
 2) Use SQLite-compatible SQL.
@@ -67,7 +69,8 @@ mSchema:
 19) When joins can duplicate entity rows but the question asks for unique entities/names/descriptions rather than events/records, use DISTINCT to avoid duplicate answers.
 20) When the question asks for "all information about X" or "all details of X" and X maps to a single table, use SELECT * FROM that_table with appropriate WHERE filters. Do not enumerate columns manually or join related tables.
 21) Preserve literal values faithfully. If the question or evidence provides an exact string/code/value, keep that value instead of normalizing or paraphrasing it.
-22) End query with semicolon.
+22) When value hints are provided, use the exact `db_value` spelling in WHERE/HAVING clauses instead of paraphrasing the question wording. These values have been verified against the actual database.
+23) End query with semicolon.
 
 SQL:
 """.strip()
