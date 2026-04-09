@@ -23,7 +23,8 @@ from text_to_sql_agent.tools.sql_candidate_analysis import (
 from text_to_sql_agent.tools.sql_schema_validator import validate_sql_schema_references
 from text_to_sql_agent.tools.sql_executor import execute_sql
 
-_MAX_TOOL_STEPS = 5
+_MAX_TOOL_STEPS = 3
+_TOOL_LOOP_TIMEOUT_S = 60
 
 _REFINER_SYSTEM = """\
 You are an expert SQLite SQL fixer with access to tools.
@@ -299,9 +300,18 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
 
         router = LLMRouter()
         tools = _build_refiner_tools(db_path, full_schema)
-        raw_text, step_usages = await _run_tool_loop(
-            router, tools, user_prompt, trace_id=state.get("trace_id"), db_id=state.get("db_id"),
-        )
+        try:
+            raw_text, step_usages = await asyncio.wait_for(
+                _run_tool_loop(
+                    router, tools, user_prompt,
+                    trace_id=state.get("trace_id"), db_id=state.get("db_id"),
+                ),
+                timeout=_TOOL_LOOP_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raw_text = ""
+            step_usages = []
+            warnings.append(f"refiner: tool loop timed out after {_TOOL_LOOP_TIMEOUT_S}s")
 
         for u in step_usages:
             llm_usage.append(u)
