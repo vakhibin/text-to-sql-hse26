@@ -66,7 +66,7 @@ class LLMRouter:
         if role == ModelRole.QUERY_SKETCHER:
             return settings.query_sketcher_model or settings.generator_model_primary
         if role == ModelRole.REFINER:
-            return settings.judge_model
+            return settings.refiner_model
         raise LLMRouterError(f"Unknown role: {role}")
 
     def temperature_for_role(self, role: ModelRole) -> float:
@@ -76,8 +76,8 @@ class LLMRouter:
         if role == ModelRole.GENERATOR_SECONDARY:
             return settings.llm_temperature_secondary
         if role == ModelRole.QUERY_SKETCHER:
-            return settings.llm_temperature_judge
-        return settings.llm_temperature_judge
+            return settings.llm_temperature_refiner
+        return settings.llm_temperature_refiner
 
     def get_chat_model(
         self,

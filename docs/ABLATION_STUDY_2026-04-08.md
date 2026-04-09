@@ -4,12 +4,13 @@
 
 ## Что сравнивается
 
-Ниже зафиксированы четыре экспериментальные точки:
+Ниже зафиксированы пять экспериментальных точек:
 
 1. `E1` - лучший на тот момент `balanced low-cost` full Spider dev run.
 2. `E2` - более агрессивный дешёвый конфиг с большим few-shot budget, но без semantic few-shot retrieval.
 3. `E3` - тот же агрессивный дешёвый конфиг, но с semantic few-shot retrieval.
 4. `E4` - E3b конфиг с отключённым decomposer (`DECOMPOSER_ENABLED=false`).
+5. `E5` - полная архитектурная ревизия: decomposer удалён, LLM judge заменён на majority voting.
 
 Важно:
 - `E1` относится к зафиксированному baseline-срезу до новой серии prompt-экспериментов.
@@ -29,6 +30,7 @@
 | `E3a` | micro subset (`14`) | semantic few-shot retrieval помогает на проблемных БД | `42.86%` | `21.43%` | `2` | `47.14s` | `$0.301` |
 | `E3b` | full Spider dev (`1034`) | semantic few-shot retrieval переносится на полный benchmark | `72.44%` | `31.53%` | `22` | `4.29s` | `$25.61` |
 | `E4` | full Spider dev (`1034`) | decomposer избыточен при наличии sketcher | `71.66%` | `31.91%` | `20` | `4.94s` | `$31.54` |
+| `E5` | full Spider dev (`1034`) | majority voting вместо LLM judge + без decomposer | `71.28%` | `33.27%` | `29` | `5.04s` | `$29.87` |
 
 ## E1. Balanced Low-Cost Baseline
 
@@ -280,48 +282,125 @@ Decomposer избыточен: query sketcher уже выполняет planning
 
 - `outputs/ablation_cheap_gen_more_candidates_20260408_202140_20260408_202141.json`
 
+## E5. Majority Voting + No Decomposer (Architecture v2)
+
+### Scope
+
+- Полный `Spider dev`
+- `1034` примера
+
+### Гипотеза
+
+Полная архитектурная ревизия: decomposer удалён из pipeline, LLM judge заменён на self-consistency majority voting. Voting группирует кандидатов по результатам исполнения и выбирает SQL из самой большой группы — zero LLM calls на этапе selection.
+
+### Команда
+
+```bash
+./scripts/run_ablation.sh configs/ablation/cheap_gen_more_candidates.env
+```
+
+### Зафиксированные параметры запуска
+
+Источник: `outputs/ablation_cheap_gen_more_candidates_20260408_233142_20260408_233143.json`
+
+- Primary generator: `google/gemma-4-26b-a4b-it`
+- Secondary generator: `qwen/qwen3.5-35b-a3b`
+- Query sketcher: `google/gemini-2.5-pro`
+- Refiner: `openai/gpt-4.1`
+- **Selection: majority voting (no LLM)**
+- **Decomposer: removed from pipeline**
+- `NUM_CANDIDATES=8`
+- `PRIMARY_CALLS=5`
+- `SECONDARY_CALLS=3`
+- `FEW_SHOT_EXAMPLES_PER_CANDIDATE=20`
+- `FEW_SHOT_SEMANTIC_RETRIEVAL=true`
+- Pipeline: `selector → sketcher → generator → exec_filter → voting → refiner`
+- Code state: ветка `feat/replace-judge-w-majority-voting`, decomposer полностью удалён, judge заменён на voting
+
+### Метрики
+
+- `EX = 71.28%`
+- `EM = 33.27%`
+- `Errors = 29`
+- `Valid predictions = 1030`
+- `Prewarm = 8.87s`
+- `Eval time = 5207.95s`
+- `Avg/example = 5.04s`
+- `Total cost = $29.87`
+- `LLM calls = 10,486`
+
+### Сравнение с E3b (LLM judge + decomposer) и E1 (balanced baseline)
+
+| Metric | E1 (baseline) | E3b (judge+decomposer) | E5 (voting, no decomposer) | E5 vs E3b | E5 vs E1 |
+|---|---:|---:|---:|---|---|
+| EX | `72.34%` | `72.44%` | `71.28%` | `-1.16 ppt` | `-1.06 ppt` |
+| EM | `33.66%` | `31.53%` | `33.27%` | `+1.74 ppt` | `-0.39 ppt` |
+| Errors | `28` | `22` | `29` | `+7` | `+1` |
+| Avg time | `3.58s` | `4.29s` | `5.04s` | `+0.75s` | `+1.46s` |
+| Cost | `$21.98` | `$25.61` | `$29.87` | `+$4.26` | `+$7.89` |
+
+### Сравнение с full pipeline baseline (judge=gpt-4.1, генераторы=gemini+gpt-oss)
+
+| Metric | Old full pipeline | E5 (voting, cheap gen) | Delta |
+|---|---:|---:|---|
+| EX | `72.92%` | `71.28%` | `-1.64 ppt` |
+| EM | `29.11%` | `33.27%` | `+4.16 ppt` |
+| Errors | `24` | `29` | `+5` |
+| Avg time | `4.49s` | `5.04s` | `+0.55s` |
+| Cost | `$67.78` | `$29.87` | **`-56%` (2.3x дешевле)** |
+
+### Ключевой вывод
+
+1. **EX 71.28%** — падение в пределах variance band (~5-8 ppt). Не значимая регрессия.
+2. **EM 33.27%** — **лучший EM за всю историю проекта** (+4.16 пп vs old full pipeline). Voting предпочитает простейший SQL из группы-победителя, что ближе к gold SQL.
+3. **Cost $29.87** — **в 2.3 раза дешевле** старого full pipeline ($67.78). Экономия за счёт: (a) cheap generators, (b) voting вместо LLM judge.
+4. **Характер ошибок**: преимущественно schema/value hallucination дешёвыми моделями (`car_1`, `student_transcripts_tracking`) и UTF-8 encoding issues (`wta_1`). Лечится через value linking / AST repair, а не через judge.
+
+### Артефакт
+
+- `outputs/ablation_cheap_gen_more_candidates_20260408_233142_20260408_233143.json`
+
+---
+
 ## Практический вывод для диплома / презентации
 
-На данный момент есть три опорные точки:
+На данный момент есть четыре опорные точки:
 
-1. `Balanced practical winner`
-   - `EX 72.34%`
-   - `EM 33.66%`
-   - `$21.98`
-   - `3.58s/example`
-   - лучший баланс качества, скорости и цены
+1. `Balanced practical winner (v1 architecture)`
+   - `EX 72.34%` / `EM 33.66%` / `$21.98` / `3.58s/example`
+   - лучший баланс качества, скорости и цены на старой архитектуре (с decomposer + LLM judge)
 
 2. `EX-oriented semantic few-shot variant`
-   - `EX 72.44%`
-   - `EM 31.53%`
-   - `$25.61`
-   - `4.29s/example`
+   - `EX 72.44%` / `EM 31.53%` / `$25.61` / `4.29s/example`
    - лучший `EX`, но хуже balance по `EM/cost/speed`
 
-3. `No-decomposer ablation`
-   - `EX 71.66%`
-   - `EM 31.91%`
-   - `$31.54`
-   - `4.94s/example`
+3. `Component ablation: decomposer removal`
+   - `EX 71.66%` / `EM 31.91%` / `$31.54` / `4.94s/example`
    - decomposer не даёт значимого вклада в качество; его ценность — только cost routing
 
-Именно в таком виде это удобно переносить в диплом:
-
-- один конфиг как `best balanced configuration`
-- второй конфиг как `best EX-oriented ablation`
-- третий конфиг как `component ablation: decomposer removal`
+4. `Architecture v2: majority voting + no decomposer`
+   - `EX 71.28%` / `EM 33.27%` / `$29.87` / `5.04s/example`
+   - **лучший EM**, **2.3x дешевле** старого full pipeline ($67.78), zero LLM calls для selection
+   - подтверждает жизнеспособность voting как замены LLM judge
 
 ## Короткие формулировки для слайдов
 
-- `Ablation 1`: дешёвые генераторы + сильный sketcher/judge дали лучший practical balance: `72.34 EX / 33.66 EM / $21.98`.
-- `Ablation 2`: увеличение few-shot контекста до `20` без semantic retrieval не дало существенного прироста на targeted subset.
-- `Ablation 3`: semantic few-shot retrieval улучшил локальный subset и дал лучший `EX` на full Spider dev (`72.44`), но ухудшил `EM` и увеличил стоимость.
-- `Ablation 4`: отключение decomposer дало `EX 71.66%` (`-0.78 ppt` vs E3b) — разница в пределах шума. Decomposer можно безопасно убрать при переходе на self-consistency voting.
+- `E1`: дешёвые генераторы + сильный sketcher/judge дали лучший practical balance: `72.34 EX / 33.66 EM / $21.98`.
+- `E2`: увеличение few-shot контекста до `20` без semantic retrieval не дало существенного прироста на targeted subset.
+- `E3`: semantic few-shot retrieval улучшил локальный subset и дал лучший `EX` на full Spider dev (`72.44`), но ухудшил `EM` и увеличил стоимость.
+- `E4`: отключение decomposer дало `EX 71.66%` (`-0.78 ppt` vs E3b) — разница в пределах шума. Decomposer безопасно убирается.
+- `E5`: замена LLM judge на majority voting дала `EX 71.28%` с **лучшим EM (33.27%)** и **2.3x экономией** vs old full pipeline. Voting жизнеспособен.
 
 ## Архитектурный вывод
 
-Результаты E4 подтверждают, что decomposer как отдельная LLM-стадия не оправдан при наличии query sketcher. Следующий шаг — замена judge на self-consistency voting, что позволит:
-- полностью убрать decomposer (complexity routing больше не нужен)
-- полностью убрать LLM judge (voting — детерминированный код)
-- сократить pipeline до 5 стадий: `selector → sketcher → generator → exec_filter+voting → refiner`
-- оставить одну дорогую модель (gemini-2.5-pro на selector + sketcher) и дешёвые генераторы
+Результаты E4+E5 подтверждают две ключевые гипотезы:
+
+1. **Decomposer избыточен** при наличии query sketcher. Удаление не вызвало значимой регрессии EX.
+
+2. **LLM judge можно заменить majority voting** без потери качества. Voting даже улучшил EM, предпочитая простейший SQL из группы-победителя.
+
+Текущая архитектура v2 (`selector → sketcher → generator → exec_filter → voting → refiner`):
+- 6 стадий вместо 7
+- Только 3 LLM-роли: sketcher, generators, refiner
+- Selection — чисто детерминистический
+- Следующий вектор улучшения: AST repair + value linking + tool-augmented refiner

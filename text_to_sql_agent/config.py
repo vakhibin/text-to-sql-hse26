@@ -22,7 +22,7 @@ class AgentSettings(BaseSettings):
     generator_model_secondary: str = "deepseek/deepseek-chat-v3"
     query_sketcher_model: str | None = None
     query_sketcher_enabled: bool = True
-    judge_model: str = "openai/gpt-4.1"
+    refiner_model: str = "openai/gpt-4.1"
     embeddings_model: str = "openai/text-embedding-3-small"
 
     # Data and retrieval paths
@@ -55,7 +55,7 @@ class AgentSettings(BaseSettings):
     # LLM generation defaults
     llm_temperature_primary: float = 0.2
     llm_temperature_secondary: float = 0.6
-    llm_temperature_judge: float = 0.0
+    llm_temperature_refiner: float = 0.0
     llm_max_tokens: int = 1024
     llm_timeout_seconds: int = 90
 
