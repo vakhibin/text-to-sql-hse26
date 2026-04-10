@@ -23,8 +23,9 @@ class SQLAgentState(TypedDict):
     filtered_schema: str
     retrieved_schema_context: str
 
-    # Value linking (pre-generation entity→DB lookup)
+    # Value & column linking (pre-generation grounding)
     value_hints: list[dict[str, str]]
+    column_hints: list[dict[str, str]]
 
     # Sketcher
     query_sketch: dict[str, Any]
@@ -142,6 +143,7 @@ def make_initial_state(
         "filtered_schema": "",
         "retrieved_schema_context": "",
         "value_hints": [],
+        "column_hints": [],
         "query_sketch": {},
         "query_sketch_text": "",
         "candidates": [],

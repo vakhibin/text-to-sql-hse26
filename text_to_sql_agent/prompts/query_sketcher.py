@@ -13,6 +13,7 @@ def build_query_sketcher_prompt(
     filtered_schema: str,
     retrieved_schema_context: str,
     value_hints_text: str = "",
+    column_hints_text: str = "",
 ) -> str:
     """Build a strong schema-grounded prompt for query sketching."""
     evidence_block = f"Evidence:\n{evidence}\n\n" if evidence else ""
@@ -21,7 +22,11 @@ def build_query_sketcher_prompt(
         if retrieved_schema_context and retrieved_schema_context != filtered_schema
         else ""
     )
-    value_hints_block = f"{value_hints_text}\n\n" if value_hints_text else ""
+    linking_blocks = ""
+    if value_hints_text:
+        linking_blocks += f"{value_hints_text}\n\n"
+    if column_hints_text:
+        linking_blocks += f"{column_hints_text}\n\n"
     return f"""
 You are `query-sketcher`, a planning stage inside a Text-to-SQL system.
 
@@ -39,9 +44,10 @@ Question:
 {evidence_block}Primary selected schema:
 {filtered_schema}
 
-{broader_schema_block}{value_hints_block}Rules:
+{broader_schema_block}{linking_blocks}Rules:
 - Use only tables and columns that appear in the provided schema context.
 - When value hints are provided, use the exact db_value spelling in your filters instead of paraphrasing the question wording. Record which hints you used in `generation_hints`.
+- When column hints are provided, use the exact table.column identifiers listed there instead of guessing or shortening column names.
 - Never invent identifiers, aliases like `T1`/`T2`, or derived columns.
 - If uncertain, leave the relevant list short or empty and record the uncertainty in `ambiguities` or `risks`.
 - Order `candidate_tables` from most likely to least likely.

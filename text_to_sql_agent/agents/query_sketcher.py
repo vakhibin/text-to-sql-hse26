@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.query_sketcher import build_query_sketcher_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
-from text_to_sql_agent.tools.value_linker import format_value_hints
+from text_to_sql_agent.tools.value_linker import format_column_hints, format_value_hints
 
 
 class QuerySketchTableItem(BaseModel):
@@ -385,6 +385,7 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
             filtered_schema=state.get("filtered_schema", ""),
             retrieved_schema_context=state.get("retrieved_schema_context", ""),
             value_hints_text=format_value_hints(state.get("value_hints", [])),
+            column_hints_text=format_column_hints(state.get("column_hints", [])),
         )
         router = LLMRouter()
         response = await router.ainvoke_with_metadata(

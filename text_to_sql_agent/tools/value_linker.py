@@ -1,10 +1,11 @@
-"""Pre-generation value linking: find actual DB values matching question entities."""
+"""Pre-generation value & column linking: ground question entities to DB schema."""
 
 from __future__ import annotations
 
 import re
 import sqlite3
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any
 
 _STOPWORDS = frozenset({
@@ -239,3 +240,163 @@ def format_value_hints(hints: list[ValueHint] | list[dict]) -> str:
                 f'{h.get("table", "")}.{h.get("column", "")} as: \'{h.get("db_value", "")}\''
             )
     return "Value hints (verified from database):\n" + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Column-name linking
+# ---------------------------------------------------------------------------
+
+_COLUMN_LINKING_STOPWORDS = _STOPWORDS | _SQL_KEYWORDS | frozenset({
+    "id", "ids", "type", "types", "date", "dates", "time", "times",
+    "year", "years", "day", "days", "month", "months",
+})
+
+_MIN_FUZZY_SIMILARITY = 0.65
+_MAX_COLUMN_HINTS = 20
+
+
+@dataclass
+class ColumnHint:
+    question_word: str
+    table: str
+    column: str
+    match_type: str  # "exact", "token_overlap", "fuzzy"
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "question_word": self.question_word,
+            "table": self.table,
+            "column": self.column,
+            "match_type": self.match_type,
+        }
+
+
+def _tokenize_identifier(name: str) -> set[str]:
+    """Split a schema identifier into lowercase tokens.
+
+    Handles underscore_case and CamelCase.
+    """
+    parts = re.sub(r"([a-z])([A-Z])", r"\1_\2", name)
+    return {t.lower() for t in re.split(r"[_\s]+", parts) if len(t) >= 2}
+
+
+def _extract_question_content_words(question: str) -> list[str]:
+    """Extract meaningful words from question for column matching."""
+    cleaned = re.sub(r"""['"][^'"]*['"]""", " ", question)
+    cleaned = re.sub(r"[?!.,;:()\[\]{}\d]", " ", cleaned)
+    words = []
+    seen: set[str] = set()
+    for tok in cleaned.split():
+        tok_lower = tok.lower()
+        if tok_lower in seen or tok_lower in _COLUMN_LINKING_STOPWORDS:
+            continue
+        if len(tok_lower) < 3:
+            continue
+        words.append(tok_lower)
+        seen.add(tok_lower)
+    return words
+
+
+def _match_word_to_column(word: str, col_name: str) -> tuple[str, float] | None:
+    """Check if a question word matches a column name. Returns (match_type, score) or None."""
+    col_lower = col_name.lower()
+
+    if word == col_lower:
+        return ("exact", 1.0)
+
+    col_tokens = _tokenize_identifier(col_name)
+    if word in col_tokens:
+        return ("token_overlap", 0.9)
+
+    for ct in col_tokens:
+        if len(word) >= 4 and len(ct) >= 4:
+            if word.startswith(ct) or ct.startswith(word):
+                return ("token_overlap", 0.8)
+
+    ratio = SequenceMatcher(None, word, col_lower).ratio()
+    if ratio >= _MIN_FUZZY_SIMILARITY:
+        return ("fuzzy", ratio)
+
+    for ct in col_tokens:
+        if len(ct) >= 4:
+            ratio = SequenceMatcher(None, word, ct).ratio()
+            if ratio >= _MIN_FUZZY_SIMILARITY:
+                return ("fuzzy", ratio)
+
+    return None
+
+
+def link_columns(
+    question: str,
+    full_schema: dict[str, Any],
+    selected_tables: list[str] | None = None,
+) -> list[ColumnHint]:
+    """Match question words to schema column names via exact, token, and fuzzy matching."""
+    if not question.strip():
+        return []
+
+    words = _extract_question_content_words(question)
+    if not words:
+        return []
+
+    tables = full_schema.get("tables", [])
+    if selected_tables:
+        selected_set = {t.lower() for t in selected_tables}
+        tables = [t for t in tables if str(t.get("name", "")).lower() in selected_set]
+
+    raw_matches: list[tuple[float, ColumnHint]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for word in words:
+        for table in tables:
+            tname = str(table.get("name", ""))
+            for col in table.get("columns", []):
+                cname = str(col.get("name", ""))
+                key = (word, tname.lower(), cname.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                result = _match_word_to_column(word, cname)
+                if result is None:
+                    continue
+                match_type, score = result
+                raw_matches.append((
+                    score,
+                    ColumnHint(
+                        question_word=word,
+                        table=tname,
+                        column=cname,
+                        match_type=match_type,
+                    ),
+                ))
+
+    raw_matches.sort(key=lambda x: -x[0])
+    hints: list[ColumnHint] = []
+    seen_words: dict[str, int] = {}
+    for _score, hint in raw_matches:
+        wcount = seen_words.get(hint.question_word, 0)
+        if wcount >= 3:
+            continue
+        hints.append(hint)
+        seen_words[hint.question_word] = wcount + 1
+        if len(hints) >= _MAX_COLUMN_HINTS:
+            break
+
+    return hints
+
+
+def format_column_hints(hints: list[ColumnHint] | list[dict]) -> str:
+    """Format column hints as a text block for prompts."""
+    if not hints:
+        return ""
+    lines = []
+    for h in hints:
+        if isinstance(h, ColumnHint):
+            lines.append(f'- "{h.question_word}" → {h.table}.{h.column}')
+        else:
+            lines.append(
+                f'- "{h.get("question_word", "")}" → '
+                f'{h.get("table", "")}.{h.get("column", "")}'
+            )
+    return "Column hints (question word → schema column):\n" + "\n".join(lines)

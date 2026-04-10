@@ -12,7 +12,7 @@ from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.generator import build_generator_prompt
 from text_to_sql_agent.tools.few_shot import load_few_shot_pool, retrieve_examples_for_candidate
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
-from text_to_sql_agent.tools.value_linker import format_value_hints
+from text_to_sql_agent.tools.value_linker import format_column_hints, format_value_hints
 
 
 def _extract_sql(text: str) -> str:
@@ -68,6 +68,7 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 query_sketch_text=state.get("query_sketch_text", ""),
                 few_shot_examples=examples,
                 value_hints_text=format_value_hints(state.get("value_hints", [])),
+                column_hints_text=format_column_hints(state.get("column_hints", [])),
             )
             response = await router.ainvoke_with_metadata(
                 role=role,
