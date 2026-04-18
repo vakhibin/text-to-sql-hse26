@@ -44,6 +44,10 @@ class QuerySketchSchema(BaseModel):
     ambiguities: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     generation_hints: list[str] = Field(default_factory=list)
+    missing_entities: list[str] = Field(
+        default_factory=list,
+        description="Question terms with no matching column in the provided schema (e.g. horsepower).",
+    )
 
 
 def _extract_json_blob(text: str) -> str:
@@ -203,6 +207,11 @@ def _format_query_sketch_text(sketch: dict[str, Any]) -> str:
             lines.append(f"{label}:")
             lines.extend(f"- {item}" for item in items)
 
+    missing = sketch.get("missing_entities", [])
+    if missing:
+        lines.append("Missing entities (no column in primary schema):")
+        lines.extend(f"- {item}" for item in missing)
+
     limit = str(sketch.get("limit", "")).strip()
     if limit:
         lines.append(f"Limit: {limit}")
@@ -278,6 +287,7 @@ def _build_minimal_fallback_sketch(state: SQLAgentState) -> tuple[dict[str, Any]
         "ambiguities": [],
         "risks": ["Fallback sketch used because query-sketcher output was unavailable or malformed."],
         "generation_hints": generation_hints[:6],
+        "missing_entities": [],
     }
     return sketch, _format_query_sketch_text(sketch)
 
@@ -298,6 +308,7 @@ def _normalize_query_sketch_payload(payload: dict[str, Any]) -> tuple[dict[str, 
         "ambiguities": _normalize_string_list(payload.get("ambiguities", [])),
         "risks": _normalize_string_list(payload.get("risks", [])),
         "generation_hints": _normalize_string_list(payload.get("generation_hints", [])),
+        "missing_entities": _normalize_string_list(payload.get("missing_entities", [])),
     }
     return sketch, _format_query_sketch_text(sketch)
 
@@ -366,6 +377,7 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
         return {
             "query_sketch": {},
             "query_sketch_text": "",
+            "missing_entities": [],
             "stage_status": {**dict(state.get("stage_status", {})), "sketcher": "skipped"},
             "warnings": list(state.get("warnings", [])),
         }
@@ -427,11 +439,21 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
             sketch, sketch_text = _build_minimal_fallback_sketch(state)
             warnings.append("query_sketcher: used deterministic fallback sketch")
 
+        missing_entities = _normalize_string_list(sketch.get("missing_entities", []))
+        sketch["missing_entities"] = missing_entities
+        sketch_text = _format_query_sketch_text(sketch)
+        loops = int(state.get("sketcher_selector_loops") or 0)
+        if missing_entities and loops >= _cfg.max_sketcher_selector_recovery:
+            warnings.append(
+                "sketcher: missing_entities set but selector recovery budget exhausted; continuing to generator"
+            )
+
         stage_status["sketcher"] = "success"
         return {
             **state,
             "query_sketch": sketch,
             "query_sketch_text": sketch_text,
+            "missing_entities": missing_entities,
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,
@@ -447,6 +469,7 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
             **state,
             "query_sketch": {},
             "query_sketch_text": "",
+            "missing_entities": [],
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,

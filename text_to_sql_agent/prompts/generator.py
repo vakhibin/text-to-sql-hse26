@@ -77,7 +77,8 @@ mSchema:
 21) Preserve literal values faithfully. If the question or evidence provides an exact string/code/value, keep that value instead of normalizing or paraphrasing it.
 22) When value hints are provided, use the exact `db_value` spelling in WHERE/HAVING clauses instead of paraphrasing the question wording. These values have been verified against the actual database.
 23) When column hints are provided, use the exact `table.column` identifiers listed there. Do not shorten, rename, or move columns to different tables.
-24) End query with semicolon.
+24) For extremum-style questions (earliest, latest, most, highest, lowest, maximum, minimum, first/last by a metric), prefer filtering with a subquery such as `WHERE col = (SELECT MIN(col) FROM ...)` or `WHERE col = (SELECT MAX(col) FROM ...)` (or `IN` when ties matter) instead of `ORDER BY ... LIMIT 1`, unless the wording clearly asks for a single ordered pick (e.g. "top one row" / "first row when sorted").
+25) End query with semicolon.
 
 SQL:
 """.strip()

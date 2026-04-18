@@ -7,7 +7,12 @@ Return strict JSON.
 """.strip()
 
 
-def build_selector_rerank_prompt(question: str, candidates: list[dict]) -> str:
+def build_selector_rerank_prompt(
+    question: str,
+    candidates: list[dict],
+    *,
+    planner_recovery_hint: str | None = None,
+) -> str:
     """Build strict-json reranking prompt for selector stage."""
     candidates_lines = []
     for idx, candidate in enumerate(candidates, start=1):
@@ -16,12 +21,15 @@ def build_selector_rerank_prompt(question: str, candidates: list[dict]) -> str:
         candidates_lines.append(
             f"{idx}. table={candidate.get('table_name')} score={score:.4f} source={source}"
         )
+    recovery_block = ""
+    if planner_recovery_hint and planner_recovery_hint.strip():
+        recovery_block = f"\nPlanner note (expand schema coverage):\n{planner_recovery_hint.strip()}\n\n"
     return f"""
 You are a database schema reranker.
 
 Question:
 {question}
-
+{recovery_block}
 Candidate tables:
 {chr(10).join(candidates_lines)}
 

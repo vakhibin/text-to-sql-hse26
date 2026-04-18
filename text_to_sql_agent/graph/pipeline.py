@@ -20,6 +20,17 @@ def _route_after_selector(state: SQLAgentState) -> str:
     return "value_linker"
 
 
+def _route_after_sketcher(state: SQLAgentState) -> str:
+    """Re-run selector when sketcher reports schema gaps (bounded by ``max_sketcher_selector_recovery``)."""
+    if state.get("stage_status", {}).get("sketcher") == "skipped":
+        return "generator"
+    missing = [x for x in (state.get("missing_entities") or []) if str(x).strip()]
+    loops = int(state.get("sketcher_selector_loops") or 0)
+    if missing and loops < settings.max_sketcher_selector_recovery:
+        return "selector"
+    return "generator"
+
+
 def _route_after_generator(state: SQLAgentState) -> str:
     """Proceed only if generation produced at least one candidate."""
     if state.get("candidates"):
@@ -69,7 +80,11 @@ def build_graph():
         {"value_linker": "value_linker", "finish": END},
     )
     graph.add_edge("value_linker", "sketcher")
-    graph.add_edge("sketcher", "generator")
+    graph.add_conditional_edges(
+        "sketcher",
+        _route_after_sketcher,
+        {"selector": "selector", "generator": "generator"},
+    )
     graph.add_conditional_edges(
         "generator",
         _route_after_generator,

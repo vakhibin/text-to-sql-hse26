@@ -51,12 +51,32 @@ class AgentSettings(BaseSettings):
     selector_target_tables_max: int = 5
     selector_debug: bool = False
     selector_top_k_lexical_tables: int = 8
+    selector_skip_filter_max_tables: int = Field(
+        default=10,
+        description=(
+            "If the database has at most this many tables, skip Chroma retrieval and LLM rerank; "
+            "pass full mSchema in filtered_schema and retrieved_schema_context. "
+            "Set to 0 to always run the normal selector."
+        ),
+    )
+    max_sketcher_selector_recovery: int = Field(
+        default=2,
+        description="Max selector re-runs after sketcher reports missing_entities (then force generator).",
+    )
 
     # LLM generation defaults
     llm_temperature_primary: float = 0.2
     llm_temperature_secondary: float = 0.6
     llm_temperature_refiner: float = 0.0
-    llm_max_tokens: int = 1024
+    llm_max_tokens: int = Field(
+        default=1024,
+        description="Default max output tokens (generator, refiner, selector reranker, etc.).",
+    )
+    llm_max_tokens_query_sketcher: int = Field(
+        default=2048,
+        description="Max output tokens for query sketcher only (structured JSON plan).",
+    )
+
     llm_timeout_seconds: int = 90
 
     # Retry policy (tenacity)

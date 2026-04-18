@@ -23,19 +23,22 @@ from text_to_sql_agent.tools.sql_candidate_analysis import (
 from text_to_sql_agent.tools.sql_schema_validator import validate_sql_schema_references
 from text_to_sql_agent.tools.sql_executor import execute_sql
 
-_MAX_TOOL_STEPS = 3
+REFINER_MAX_TOOL_STEPS = 3
 _TOOL_LOOP_TIMEOUT_S = 60
 
 _REFINER_SYSTEM = """\
 You are an expert SQLite SQL fixer with access to tools.
 Diagnose the problem, use tools to inspect the schema and test fixes, then return ONLY the corrected SQL.
 
+Tools see the full database schema (all tables), not a trimmed subset.
+
 Strategy:
-1. If the error mentions an unknown table or column, use get_table_columns or list_all_tables to find the correct names.
-2. If a literal value might be misspelled, use search_column_values to find the correct spelling.
-3. After making changes, use validate_sql to check schema validity.
-4. Use execute_sql to verify your fix actually runs.
-5. When confident, return ONLY the final corrected SQL (no markdown, no explanation)."""
+1. If the error is `no such column` or unknown column: BEFORE proposing a fix, call get_table_columns once per table referenced in the failing SQL, compare available column names to the query, then fix identifiers to match the schema.
+2. If the error mentions an unknown table, use get_table_columns or list_all_tables to find the correct names.
+3. If a literal value might be misspelled, use search_column_values to find the correct spelling.
+4. After making changes, use validate_sql to check schema validity.
+5. Use execute_sql to verify your fix actually runs.
+6. When confident, return ONLY the final corrected SQL (no markdown, no explanation)."""
 
 
 def _extract_sql(text: str) -> str:
@@ -66,7 +69,7 @@ def _build_refiner_tools(
 
     @langchain_tool
     def get_table_columns(table_name: str) -> str:
-        """Get column names, types, sample values and foreign keys for a table. Use when you need correct column names."""
+        """Get column names, types, sample values and foreign keys for a table from the FULL schema. Use when you need correct column names."""
         for table in full_schema.get("tables", []):
             if table["name"].lower() == table_name.lower():
                 cols = []
@@ -152,7 +155,7 @@ async def _run_tool_loop(
 
     usage_dicts: list[dict[str, Any]] = []
 
-    for step in range(_MAX_TOOL_STEPS):
+    for step in range(REFINER_MAX_TOOL_STEPS):
         response: AIMessage = await model_with_tools.ainvoke(messages)
         usage_record = router._extract_usage(
             response=response, model_name=model_name, stage=f"refiner_tool_step_{step}",

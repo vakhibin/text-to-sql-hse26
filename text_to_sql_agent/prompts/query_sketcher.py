@@ -50,12 +50,15 @@ Question:
 - When column hints are provided, use the exact table.column identifiers listed there instead of guessing or shortening column names.
 - Never invent identifiers, aliases like `T1`/`T2`, or derived columns.
 - If uncertain, leave the relevant list short or empty and record the uncertainty in `ambiguities` or `risks`.
+- If the question names a field or concept (e.g. horsepower) and no column in the primary schema clearly matches it, add that term to `missing_entities`.
 - Order `candidate_tables` from most likely to least likely.
 - Preserve the output column order implied by the question wording whenever the question names multiple fields.
 - Keep `candidate_tables` to at most 4 items.
 - Keep `join_plan` to at most 3 items.
 - Keep `generation_hints` to 3-6 short items.
 - `join_plan` should be empty when no join is clearly needed.
+- Shortest path: use the minimum number of tables. If a needed column already exists in a table you already plan to use, do not add another table or join.
+- String join penalty: avoid join predicates on free-text columns (e.g. model name = model name). Prefer joins on numeric or stable id/key columns (e.g. MakeId = Id) that appear in the schema.
 - Prefer the simplest query shape that can answer the question correctly.
 - Do not recommend a join when one selected table already contains the requested fields and filters.
 - `subquery_needed` should be true only when nesting, set operations, exclusion, or comparison to aggregate values is likely required.
@@ -90,6 +93,7 @@ Return STRICT JSON with exactly these keys:
   "set_operation": "none|union|intersect|except",
   "ambiguities": ["..."],
   "risks": ["..."],
-  "generation_hints": ["3-6 short bullets that help SQL generation"]
+  "generation_hints": ["3-6 short bullets that help SQL generation"],
+  "missing_entities": ["question terms (e.g. horsepower) with no matching column name in the primary schema above — empty array if none"]
 }}
 """.strip()

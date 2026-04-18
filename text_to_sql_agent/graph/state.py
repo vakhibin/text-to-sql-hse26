@@ -18,6 +18,10 @@ class SQLAgentState(TypedDict):
     evidence: Optional[str]
     schema_root: Optional[str]
 
+    # Sketcher → selector recovery (missing schema concepts)
+    missing_entities: list[str]
+    sketcher_selector_loops: int
+
     # Selector
     full_schema: dict
     filtered_schema: str
@@ -139,6 +143,8 @@ def make_initial_state(
         "db_id": db_id,
         "evidence": evidence,
         "schema_root": schema_root,
+        "missing_entities": [],
+        "sketcher_selector_loops": 0,
         "full_schema": {},
         "filtered_schema": "",
         "retrieved_schema_context": "",

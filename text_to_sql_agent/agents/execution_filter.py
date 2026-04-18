@@ -15,6 +15,11 @@ from text_to_sql_agent.tools.sql_candidate_analysis import (
 )
 from text_to_sql_agent.tools.sql_schema_validator import validate_sql_schema_references
 
+def _sanitize_candidate_sql(sql: str) -> str:
+    """Strip whitespace and leading junk (e.g. model artifacts like '. SELECT')."""
+    return sql.strip().lstrip(". \n\t")
+
+
 _REFUSAL_PATTERNS = re.compile(
     r"^\s*SELECT\s+'[^']*("
     r"cannot|can't|unable|sorry|not possible|no answer|impossible"
@@ -44,7 +49,7 @@ async def run_execution_filter(state: SQLAgentState) -> SQLAgentState:
     warnings = list(state.get("warnings", []))
     stage_status["execution_filter"] = "running"
 
-    candidates = state.get("candidates", [])
+    candidates = [_sanitize_candidate_sql(s) for s in state.get("candidates", [])]
     if not candidates:
         stage_status["execution_filter"] = "success"
         return {

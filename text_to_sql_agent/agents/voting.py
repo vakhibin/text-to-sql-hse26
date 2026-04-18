@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections import Counter
 from typing import Any
@@ -26,9 +27,8 @@ def _canonical_result(rows: list[tuple[Any, ...]] | None) -> tuple[tuple[Any, ..
 
 
 def _sql_simplicity_score(sql: str) -> tuple[int, int]:
-    """Lower is simpler: (number_of_join_keywords, length)."""
-    upper = sql.upper()
-    join_count = upper.count(" JOIN ")
+    """Lower is simpler: (JOIN count, length). Counts JOIN tokens with word boundaries."""
+    join_count = len(re.findall(r"\bJOIN\b", sql, flags=re.IGNORECASE))
     return (join_count, len(sql))
 
 

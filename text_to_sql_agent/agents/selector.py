@@ -13,6 +13,7 @@ from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.selector import build_selector_rerank_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
 from text_to_sql_agent.tools.schema_loader import load_schema, schema_to_mschema
+from text_to_sql_agent.tools.schema_fk_bridge import expand_selected_tables_via_fk_graph
 from text_to_sql_agent.tools.vector_store import build_vector_store
 
 
@@ -206,6 +207,44 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         schema_root = state.get("schema_root")
         schema = await load_schema(db_id, spider_root=schema_root)
 
+        loops = int(state.get("sketcher_selector_loops") or 0)
+        recovery_missing = [str(x).strip() for x in (state.get("missing_entities") or []) if str(x).strip()]
+        planner_recovery_hint = ""
+        if recovery_missing:
+            loops += 1
+            planner_recovery_hint = (
+                "The query planner reported these terms are not covered by the prior schema slice: "
+                f"{', '.join(recovery_missing)}. Prefer candidate tables that expose matching or related columns."
+            )
+            warnings.append(
+                f"selector: sketcher recovery pass {loops}/{settings.max_sketcher_selector_recovery} "
+                f"(missing_entities={recovery_missing})"
+            )
+
+        n_tables = len(schema.get("tables", []))
+        cap = settings.selector_skip_filter_max_tables
+        if cap > 0 and n_tables <= cap:
+            mschema_full = schema_to_mschema(schema, schema_root=schema_root)
+            elapsed = round(time.perf_counter() - started, 4)
+            warnings.append(
+                f"selector: {n_tables} table(s) <= SELECTOR_SKIP_FILTER_MAX_TABLES ({cap}); "
+                "using full schema without retrieval or rerank"
+            )
+            stage_status["selector"] = "success"
+            return {
+                **state,
+                "full_schema": schema,
+                "filtered_schema": mschema_full,
+                "retrieved_schema_context": mschema_full,
+                "missing_entities": [],
+                "sketcher_selector_loops": loops,
+                "stage_status": stage_status,
+                "stage_timings": {**stage_timings, "selector": elapsed},
+                "warnings": warnings,
+                "llm_usage": llm_usage,
+                "total_cost_usd": total_cost_usd,
+            }
+
         vector_store = _get_vector_store()
         await vector_store.index_schema(db_id=db_id, schema=schema)
         vector_candidates = await vector_store.query_tables(
@@ -232,7 +271,11 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         if candidates:
             _debug(f"candidate_names={[c.get('table_name') for c in candidates]}")
             candidate_names = [str(c.get("table_name", "")) for c in candidates if c.get("table_name")]
-            prompt = build_selector_rerank_prompt(question=question, candidates=candidates)
+            prompt = build_selector_rerank_prompt(
+                question=question,
+                candidates=candidates,
+                planner_recovery_hint=planner_recovery_hint or None,
+            )
             router = LLMRouter()
             response = await router.ainvoke_with_metadata(
                 role=ModelRole.GENERATOR_PRIMARY,
@@ -271,6 +314,15 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
             warnings.append("selector: no vector candidates found; using full schema")
             _debug("no_candidates_found_using_full_schema")
 
+        if selected_tables:
+            bridged = expand_selected_tables_via_fk_graph(schema, selected_tables)
+            if set(bridged) != set(selected_tables):
+                added = sorted(set(bridged) - set(selected_tables))
+                if added:
+                    warnings.append(f"selector: FK bridge added tables {added}")
+            selected_tables = bridged
+            _debug(f"fk_bridge_selected={selected_tables}")
+
         filtered_schema = _filter_schema_tables(schema, selected_tables)
         retrieved_schema = _build_retrieved_schema_context(schema, candidate_names)
         _debug(f"final_selected_tables={selected_tables}")
@@ -280,6 +332,8 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
             "full_schema": schema,
             "filtered_schema": schema_to_mschema(filtered_schema, schema_root=schema_root),
             "retrieved_schema_context": schema_to_mschema(retrieved_schema, schema_root=schema_root),
+            "missing_entities": [],
+            "sketcher_selector_loops": loops,
             "stage_status": stage_status,
             "stage_timings": {
                 **stage_timings,
@@ -293,6 +347,7 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         stage_status["selector"] = "failed"
         return {
             **state,
+            "missing_entities": [],
             "error_message": str(exc),
             "stage_status": stage_status,
             "stage_timings": {

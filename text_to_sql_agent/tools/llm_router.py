@@ -79,26 +79,34 @@ class LLMRouter:
             return settings.llm_temperature_refiner
         return settings.llm_temperature_refiner
 
+    def max_tokens_for_role(self, role: ModelRole) -> int:
+        """Max completion tokens; sketcher may use a higher budget than other stages."""
+        if role == ModelRole.QUERY_SKETCHER:
+            return settings.llm_max_tokens_query_sketcher
+        return settings.llm_max_tokens
+
     def get_chat_model(
         self,
         role: ModelRole,
         *,
         model_override: str | None = None,
         temperature_override: float | None = None,
+        max_tokens_override: int | None = None,
     ) -> BaseChatModel:
         """Return cached ChatOpenAI client configured for OpenRouter."""
         model = model_override or self.model_for_role(role)
         temperature = (
             temperature_override if temperature_override is not None else self.temperature_for_role(role)
         )
-        cache_key = (model, temperature)
+        max_tokens = max_tokens_override if max_tokens_override is not None else self.max_tokens_for_role(role)
+        cache_key = (model, temperature, max_tokens)
         if cache_key not in self._cache:
             self._cache[cache_key] = ChatOpenAI(
                 model=model,
                 api_key=settings.openrouter_api_key,
                 base_url=settings.openrouter_base_url,
                 temperature=temperature,
-                max_tokens=settings.llm_max_tokens,
+                max_tokens=max_tokens,
                 timeout=settings.llm_timeout_seconds,
             )
         return self._cache[cache_key]
