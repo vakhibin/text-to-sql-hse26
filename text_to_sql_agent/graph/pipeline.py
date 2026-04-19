@@ -1,5 +1,9 @@
 """LangGraph StateGraph scaffold for text-to-sql pipeline."""
 
+from __future__ import annotations
+
+from typing import Any, Callable, Awaitable
+
 from langgraph.graph import END, START, StateGraph
 
 from text_to_sql_agent.config import settings
@@ -11,6 +15,84 @@ from text_to_sql_agent.agents.query_sketcher import run_query_sketcher
 from text_to_sql_agent.agents.refiner import run_refiner
 from text_to_sql_agent.agents.selector import run_selector
 from text_to_sql_agent.graph.state import SQLAgentState
+from text_to_sql_agent.tools.observability import start_langfuse_span
+
+
+_STAGE_IO: dict[str, dict[str, list[str]]] = {
+    "selector": {
+        "input": ["question", "db_id"],
+        "output": ["filtered_schema"],
+    },
+    "value_linker": {
+        "input": ["question"],
+        "output": ["value_hints", "column_hints"],
+    },
+    "sketcher": {
+        "input": ["question", "filtered_schema"],
+        "output": ["query_sketch_text"],
+    },
+    "generator": {
+        "input": ["query_sketch_text"],
+        "output": ["candidates"],
+    },
+    "execution_filter": {
+        "input": ["candidates"],
+        "output": ["valid_candidates"],
+    },
+    "voting": {
+        "input": ["valid_candidates"],
+        "output": ["best_sql", "selection_confidence", "selection_method", "selection_reasoning"],
+    },
+    "refiner": {
+        "input": ["best_sql", "error_message"],
+        "output": ["final_sql", "refine_attempts"],
+    },
+}
+
+
+def _span_summary(keys: list[str], data: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact payload for Langfuse span input/output."""
+    out: dict[str, Any] = {}
+    for k in keys:
+        v = data.get(k)
+        if v is None:
+            continue
+        if isinstance(v, list) and len(v) > 3:
+            out[k] = {"count": len(v), "preview": v[:2]}
+        else:
+            out[k] = v
+    return out
+
+
+def _traced(
+    stage_name: str,
+    agent_fn: Callable[[SQLAgentState], Awaitable[SQLAgentState]],
+) -> Callable[[SQLAgentState], Awaitable[SQLAgentState]]:
+    """Wrap an agent node with Langfuse span tracking (best-effort, no-op when disabled)."""
+    io = _STAGE_IO.get(stage_name, {})
+    input_keys = io.get("input", [])
+    output_keys = io.get("output", [])
+
+    async def wrapper(state: SQLAgentState) -> SQLAgentState:
+        with start_langfuse_span(
+            name=stage_name,
+            input_payload=_span_summary(input_keys, state),
+        ) as span:
+            try:
+                result = await agent_fn(state)
+                stage_failed = result.get("stage_status", {}).get(stage_name) == "failed"
+                span.update(
+                    output=_span_summary(output_keys, result),
+                    **({"level": "ERROR", "status_message": result.get("error_message", "")} if stage_failed else {}),
+                )
+                return result
+            except Exception as exc:
+                span.update(level="ERROR", status_message=str(exc))
+                raise
+
+    wrapper.__name__ = agent_fn.__name__
+    wrapper.__qualname__ = agent_fn.__qualname__
+    return wrapper
 
 
 def _route_after_selector(state: SQLAgentState) -> str:
@@ -54,13 +136,13 @@ def build_graph():
     """Build StateGraph wiring: selector → value_linker → sketcher → generator → exec_filter → voting → refiner."""
     graph = StateGraph(SQLAgentState)
 
-    graph.add_node("selector", run_selector)
-    graph.add_node("value_linker", run_value_linker)
-    graph.add_node("sketcher", run_query_sketcher)
-    graph.add_node("generator", run_generator)
-    graph.add_node("execution_filter", run_execution_filter)
-    graph.add_node("voting", run_voting)
-    graph.add_node("refiner", run_refiner)
+    graph.add_node("selector", _traced("selector", run_selector))
+    graph.add_node("value_linker", _traced("value_linker", run_value_linker))
+    graph.add_node("sketcher", _traced("sketcher", run_query_sketcher))
+    graph.add_node("generator", _traced("generator", run_generator))
+    graph.add_node("execution_filter", _traced("execution_filter", run_execution_filter))
+    graph.add_node("voting", _traced("voting", run_voting))
+    graph.add_node("refiner", _traced("refiner", run_refiner))
 
     graph.add_edge(START, "selector")
     graph.add_conditional_edges(

@@ -203,33 +203,27 @@ class LLMRouter:
             model_override=model_name,
             temperature_override=temperature_override,
         )
-        generation, generation_ctx = start_langfuse_generation(
+        with start_langfuse_generation(
             name=stage_name,
             trace_id=trace_id,
             model=model_name,
             input_payload=list(messages),
             metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
-        )
-        try:
-            with generation_ctx:
+        ) as generation:
+            try:
                 response = await llm.ainvoke(messages)
-        except Exception as exc:  # pragma: no cover - runtime/network path
-            update_langfuse_generation(
-                generation,
-                level="ERROR",
-                status_message=str(exc),
-                metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
-            )
-            raise LLMInvocationError(str(exc)) from exc
+            except Exception as exc:  # pragma: no cover - runtime/network path
+                update_langfuse_generation(
+                    generation,
+                    level="ERROR",
+                    status_message=str(exc),
+                )
+                raise LLMInvocationError(str(exc)) from exc
 
-        normalized_text = self._normalize_text(response.content)
-        usage = self._extract_usage(response=response, model_name=model_name, stage=stage_name)
-        update_langfuse_generation(
-            generation,
-            output=normalized_text,
-            usage=usage,
-            metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
-        )
+            normalized_text = self._normalize_text(response.content)
+            usage = self._extract_usage(response=response, model_name=model_name, stage=stage_name)
+            update_langfuse_generation(generation, output=normalized_text, usage=usage)
+
         return LLMInvokeResult(
             text=normalized_text,
             usage=usage.as_dict(),

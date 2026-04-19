@@ -29,7 +29,7 @@ from text_to_sql_agent.evaluation.metrics import (
 from text_to_sql_agent.evaluation.spider_debug_subset import load_subset_manifest
 from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import make_initial_state
-from text_to_sql_agent.tools.observability import flush_langfuse
+from text_to_sql_agent.tools.observability import flush_langfuse, start_langfuse_trace
 from text_to_sql_agent.tools.sql_executor import execute_sql
 
 KAGGLE_SPIDER_DATASET = "jeromeblanchet/yale-universitys-spider-10-nlp-dataset"
@@ -244,6 +244,22 @@ def _summarize_partial_results(
     return metrics, predictions, summary
 
 
+def _experiment_metadata() -> dict[str, Any]:
+    """Snapshot of current config for Langfuse trace tagging."""
+    return {
+        "generator_model_primary": settings.generator_model_primary,
+        "generator_model_secondary": settings.generator_model_secondary,
+        "query_sketcher_model": settings.query_sketcher_model or settings.generator_model_primary,
+        "refiner_model": settings.refiner_model,
+        "num_candidates": settings.num_candidates,
+        "primary_calls": settings.primary_calls,
+        "secondary_calls": settings.secondary_calls,
+        "few_shot_examples_per_candidate": settings.few_shot_examples_per_candidate,
+        "few_shot_semantic_retrieval": settings.few_shot_semantic_retrieval,
+        "max_refine_attempts": settings.max_refine_attempts,
+    }
+
+
 async def _evaluate_one(
     graph,
     example: SpiderExample,
@@ -252,43 +268,69 @@ async def _evaluate_one(
     benchmark_run_id: str,
     example_idx: int,
 ) -> dict[str, Any]:
-    state = make_initial_state(
-        question=example.question,
-        db_id=example.db_id,
-        evidence=example.evidence,
-        schema_root=str(spider_root),
-        trace_id=f"{benchmark_run_id}:{example_idx}",
-    )
-    result = await graph.ainvoke(state)
-    predicted_sql = (result.get("final_sql") or result.get("best_sql") or "").strip()
+    trace_id = f"{benchmark_run_id}:{example_idx}"
 
-    db_path = spider_root / "database" / example.db_id / f"{example.db_id}.sqlite"
-    pred_exec = await execute_sql(str(db_path), predicted_sql) if predicted_sql else None
-    gold_exec = await execute_sql(str(db_path), example.query)
-
-    exec_match = (
-        pred_exec is not None
-        and pred_exec.success
-        and gold_exec.success
-        and official_execution_match(
-            pred_exec.rows,
-            gold_exec.rows,
-            gold_sql=example.query,
+    with start_langfuse_trace(
+        trace_id=trace_id,
+        session_id=benchmark_run_id,
+        name="text-to-sql",
+        input_payload={
+            "question": example.question,
+            "db_id": example.db_id,
+            "evidence": example.evidence,
+        },
+        metadata=_experiment_metadata(),
+        tags=["spider", example.db_id],
+    ) as root:
+        state = make_initial_state(
+            question=example.question,
+            db_id=example.db_id,
+            evidence=example.evidence,
+            schema_root=str(spider_root),
+            trace_id=trace_id,
         )
-    )
-    return {
-        "db_id": example.db_id,
-        "question": example.question,
-        "predicted_sql": predicted_sql,
-        "gold_sql": example.query,
-        "execution_match": bool(exec_match),
-        "exact_match": exact_match(predicted_sql, example.query),
-        "error_message": result.get("error_message"),
-        "warnings": result.get("warnings", []),
-        "trace_id": result.get("trace_id"),
-        "llm_usage": result.get("llm_usage", []),
-        "total_cost_usd": result.get("total_cost_usd", 0.0),
-    }
+        result = await graph.ainvoke(state)
+        predicted_sql = (result.get("final_sql") or result.get("best_sql") or "").strip()
+
+        db_path = spider_root / "database" / example.db_id / f"{example.db_id}.sqlite"
+        pred_exec = await execute_sql(str(db_path), predicted_sql) if predicted_sql else None
+        gold_exec = await execute_sql(str(db_path), example.query)
+
+        exec_match = (
+            pred_exec is not None
+            and pred_exec.success
+            and gold_exec.success
+            and official_execution_match(
+                pred_exec.rows,
+                gold_exec.rows,
+                gold_sql=example.query,
+            )
+        )
+        em = exact_match(predicted_sql, example.query)
+
+        root.update(
+            output={
+                "predicted_sql": predicted_sql,
+                "execution_match": bool(exec_match),
+                "exact_match": em,
+                "error_message": result.get("error_message"),
+            },
+            level="DEFAULT" if exec_match else "WARNING",
+        )
+
+        return {
+            "db_id": example.db_id,
+            "question": example.question,
+            "predicted_sql": predicted_sql,
+            "gold_sql": example.query,
+            "execution_match": bool(exec_match),
+            "exact_match": em,
+            "error_message": result.get("error_message"),
+            "warnings": result.get("warnings", []),
+            "trace_id": result.get("trace_id"),
+            "llm_usage": result.get("llm_usage", []),
+            "total_cost_usd": result.get("total_cost_usd", 0.0),
+        }
 
 
 def _apply_subset_manifest(

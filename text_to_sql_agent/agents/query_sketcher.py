@@ -13,6 +13,10 @@ from pydantic import BaseModel, Field
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.query_sketcher import build_query_sketcher_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
+from text_to_sql_agent.tools.observability import (
+    start_langfuse_generation,
+    update_langfuse_generation,
+)
 from text_to_sql_agent.tools.value_linker import format_column_hints, format_value_hints
 
 
@@ -318,32 +322,42 @@ async def _repair_query_sketch_with_structured_output(
 ) -> tuple[dict[str, Any], str, list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     usage_records: list[dict[str, Any]] = []
+    model_name = router.model_for_role(ModelRole.QUERY_SKETCHER)
     llm = router.get_chat_model(ModelRole.QUERY_SKETCHER, temperature_override=0.0)
     structured_llm = llm.with_structured_output(QuerySketchSchema, include_raw=True)
-    repaired = await structured_llm.ainvoke(
-        [
-            ("system", "Convert the draft into valid structured output only. Do not output SQL."),
-            (
-                "user",
-                "Normalize this draft query sketch into the target schema. "
-                "Keep it compact, schema-grounded, and valid for the structured schema.\n\n"
-                f"Question: {state.get('question', '')}\n"
-                f"Selected schema:\n{state.get('filtered_schema', '')}\n\n"
-                f"Draft sketch:\n{response_text}",
-            ),
-        ]
-    )
 
-    raw_response = repaired.get("raw") if isinstance(repaired, dict) else None
-    parsed = repaired.get("parsed") if isinstance(repaired, dict) else None
-    parsing_error = repaired.get("parsing_error") if isinstance(repaired, dict) else None
-    if raw_response is not None:
-        usage = router._extract_usage(
-            response=raw_response,
-            model_name=router.model_for_role(ModelRole.QUERY_SKETCHER),
-            stage="sketcher_repair",
-        )
-        usage_records.append(usage.as_dict())
+    repair_messages = [
+        ("system", "Convert the draft into valid structured output only. Do not output SQL."),
+        (
+            "user",
+            "Normalize this draft query sketch into the target schema. "
+            "Keep it compact, schema-grounded, and valid for the structured schema.\n\n"
+            f"Question: {state.get('question', '')}\n"
+            f"Selected schema:\n{state.get('filtered_schema', '')}\n\n"
+            f"Draft sketch:\n{response_text}",
+        ),
+    ]
+    with start_langfuse_generation(
+        name="sketcher_repair",
+        trace_id=state.get("trace_id"),
+        model=model_name,
+        input_payload=list(repair_messages),
+        metadata={"stage": "sketcher_repair"},
+    ) as generation:
+        repaired = await structured_llm.ainvoke(repair_messages)
+        raw_response = repaired.get("raw") if isinstance(repaired, dict) else None
+        parsed = repaired.get("parsed") if isinstance(repaired, dict) else None
+        parsing_error = repaired.get("parsing_error") if isinstance(repaired, dict) else None
+        if raw_response is not None:
+            usage = router._extract_usage(
+                response=raw_response,
+                model_name=model_name,
+                stage="sketcher_repair",
+            )
+            update_langfuse_generation(generation, output=str(parsed or ""), usage=usage)
+            usage_records.append(usage.as_dict())
+        else:
+            update_langfuse_generation(generation, level="WARNING", status_message="no raw response")
     if parsing_error is not None:
         warnings.append(f"query_sketcher: structured repair failed ({parsing_error})")
     if parsed is None:

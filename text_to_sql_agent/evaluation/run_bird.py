@@ -24,7 +24,7 @@ from text_to_sql_agent.evaluation.metrics import (
 )
 from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import make_initial_state
-from text_to_sql_agent.tools.observability import flush_langfuse
+from text_to_sql_agent.tools.observability import flush_langfuse, start_langfuse_trace
 from text_to_sql_agent.tools.sql_executor import execute_sql
 
 
@@ -146,6 +146,22 @@ def _strip_internal_fields(row: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in row.items() if key != "llm_usage"}
 
 
+def _experiment_metadata() -> dict[str, Any]:
+    """Snapshot of current config for Langfuse trace tagging."""
+    return {
+        "generator_model_primary": settings.generator_model_primary,
+        "generator_model_secondary": settings.generator_model_secondary,
+        "query_sketcher_model": settings.query_sketcher_model or settings.generator_model_primary,
+        "refiner_model": settings.refiner_model,
+        "num_candidates": settings.num_candidates,
+        "primary_calls": settings.primary_calls,
+        "secondary_calls": settings.secondary_calls,
+        "few_shot_examples_per_candidate": settings.few_shot_examples_per_candidate,
+        "few_shot_semantic_retrieval": settings.few_shot_semantic_retrieval,
+        "max_refine_attempts": settings.max_refine_attempts,
+    }
+
+
 async def _evaluate_one(
     graph,
     example: BirdExample,
@@ -155,57 +171,82 @@ async def _evaluate_one(
     benchmark_run_id: str,
     example_idx: int,
 ) -> dict[str, Any]:
-    state = make_initial_state(
-        question=example.question,
-        db_id=example.db_id,
-        evidence=example.evidence,
-        schema_root=str(schema_root),
-        trace_id=f"{benchmark_run_id}:{example_idx}",
-    )
-    result = await graph.ainvoke(state)
-    predicted_sql = (result.get("final_sql") or result.get("best_sql") or "").strip()
+    trace_id = f"{benchmark_run_id}:{example_idx}"
 
-    db_path = db_dir / example.db_id / f"{example.db_id}.sqlite"
-    pred_time = 0.0
-    pred_exec = None
-    if predicted_sql:
-        started = time.perf_counter()
-        pred_exec = await execute_sql(str(db_path), predicted_sql)
-        pred_time = time.perf_counter() - started
-
-    started = time.perf_counter()
-    gold_exec = await execute_sql(str(db_path), example.gold_sql)
-    gold_time = time.perf_counter() - started
-
-    execution_match = (
-        pred_exec is not None
-        and pred_exec.success
-        and gold_exec.success
-        and official_execution_match(
-            pred_exec.rows,
-            gold_exec.rows,
-            gold_sql=example.gold_sql,
+    with start_langfuse_trace(
+        trace_id=trace_id,
+        session_id=benchmark_run_id,
+        name="text-to-sql",
+        input_payload={
+            "question": example.question,
+            "db_id": example.db_id,
+            "evidence": example.evidence,
+        },
+        metadata=_experiment_metadata(),
+        tags=["bird", example.db_id],
+    ) as root:
+        state = make_initial_state(
+            question=example.question,
+            db_id=example.db_id,
+            evidence=example.evidence,
+            schema_root=str(schema_root),
+            trace_id=trace_id,
         )
-    )
+        result = await graph.ainvoke(state)
+        predicted_sql = (result.get("final_sql") or result.get("best_sql") or "").strip()
 
-    return {
-        "question_id": example.question_id,
-        "db_id": example.db_id,
-        "question": example.question,
-        "difficulty": example.difficulty,
-        "predicted_sql": predicted_sql,
-        "gold_sql": example.gold_sql,
-        "execution_match": bool(execution_match),
-        "exact_match": exact_match(predicted_sql, example.gold_sql),
-        "r_ves": round(_compute_r_ves(pred_time, gold_time, bool(execution_match)), 4),
-        "pred_time_s": round(pred_time, 4),
-        "gold_time_s": round(gold_time, 4),
-        "error_message": result.get("error_message"),
-        "warnings": result.get("warnings", []),
-        "trace_id": result.get("trace_id"),
-        "llm_usage": result.get("llm_usage", []),
-        "total_cost_usd": result.get("total_cost_usd", 0.0),
-    }
+        db_path = db_dir / example.db_id / f"{example.db_id}.sqlite"
+        pred_time = 0.0
+        pred_exec = None
+        if predicted_sql:
+            started = time.perf_counter()
+            pred_exec = await execute_sql(str(db_path), predicted_sql)
+            pred_time = time.perf_counter() - started
+
+        started = time.perf_counter()
+        gold_exec = await execute_sql(str(db_path), example.gold_sql)
+        gold_time = time.perf_counter() - started
+
+        execution_match = (
+            pred_exec is not None
+            and pred_exec.success
+            and gold_exec.success
+            and official_execution_match(
+                pred_exec.rows,
+                gold_exec.rows,
+                gold_sql=example.gold_sql,
+            )
+        )
+        em = exact_match(predicted_sql, example.gold_sql)
+
+        root.update(
+            output={
+                "predicted_sql": predicted_sql,
+                "execution_match": bool(execution_match),
+                "exact_match": em,
+                "error_message": result.get("error_message"),
+            },
+            level="DEFAULT" if execution_match else "WARNING",
+        )
+
+        return {
+            "question_id": example.question_id,
+            "db_id": example.db_id,
+            "question": example.question,
+            "difficulty": example.difficulty,
+            "predicted_sql": predicted_sql,
+            "gold_sql": example.gold_sql,
+            "execution_match": bool(execution_match),
+            "exact_match": em,
+            "r_ves": round(_compute_r_ves(pred_time, gold_time, bool(execution_match)), 4),
+            "pred_time_s": round(pred_time, 4),
+            "gold_time_s": round(gold_time, 4),
+            "error_message": result.get("error_message"),
+            "warnings": result.get("warnings", []),
+            "trace_id": result.get("trace_id"),
+            "llm_usage": result.get("llm_usage", []),
+            "total_cost_usd": result.get("total_cost_usd", 0.0),
+        }
 
 
 async def run_bird_benchmark(

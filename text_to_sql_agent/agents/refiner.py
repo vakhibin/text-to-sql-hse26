@@ -15,6 +15,10 @@ from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.refiner import build_refiner_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
+from text_to_sql_agent.tools.observability import (
+    start_langfuse_generation,
+    update_langfuse_generation,
+)
 from text_to_sql_agent.tools.sql_ast_repair import repair_sql_schema_references as ast_repair
 from text_to_sql_agent.tools.sql_candidate_analysis import (
     analyze_sql_candidate,
@@ -153,10 +157,24 @@ async def _run_tool_loop(
     usage_dicts: list[dict[str, Any]] = []
 
     for step in range(_MAX_TOOL_STEPS):
-        response: AIMessage = await model_with_tools.ainvoke(messages)
-        usage_record = router._extract_usage(
-            response=response, model_name=model_name, stage=f"refiner_tool_step_{step}",
-        )
+        gen_name = f"refiner_tool_step_{step}"
+        with start_langfuse_generation(
+            name=gen_name,
+            trace_id=trace_id,
+            model=model_name,
+            input_payload=[{"role": getattr(m, "type", "?"), "content": str(getattr(m, "content", ""))[:500]} for m in messages[-3:]],
+            metadata={"db_id": db_id, "stage": gen_name},
+        ) as generation:
+            response: AIMessage = await model_with_tools.ainvoke(messages)
+            usage_record = router._extract_usage(
+                response=response, model_name=model_name, stage=gen_name,
+            )
+            update_langfuse_generation(
+                generation,
+                output=str(response.content or "")[:2000],
+                usage=usage_record,
+                metadata={"tool_calls": len(response.tool_calls) if response.tool_calls else 0},
+            )
         usage_dicts.append(usage_record.as_dict())
         messages.append(response)
 
