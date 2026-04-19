@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict
 from uuid import uuid4
 
-StageName = Literal["selector", "decomposer", "generator", "execution_filter", "judge", "refiner"]
+StageName = Literal["selector", "sketcher", "generator", "execution_filter", "voting", "refiner"]
 StageRunStatus = Literal["pending", "running", "success", "failed", "skipped"]
-ComplexityLevel = Literal["simple", "moderate", "complex", "unknown"]
 
 
 class SQLAgentState(TypedDict):
@@ -17,22 +16,33 @@ class SQLAgentState(TypedDict):
     question: str
     db_id: str
     evidence: Optional[str]
+    schema_root: Optional[str]
 
     # Selector
     full_schema: dict
     filtered_schema: str
+    retrieved_schema_context: str
 
-    # Decomposer
-    complexity: ComplexityLevel
-    sub_questions: list[str]
+    # Value & column linking (pre-generation grounding)
+    value_hints: list[dict[str, str]]
+    column_hints: list[dict[str, str]]
+
+    # Sketcher
+    query_sketch: dict[str, Any]
+    query_sketch_text: str
 
     # Generator
     candidates: list[str]
     valid_candidates: list[str]
+    candidate_diagnostics: list[dict[str, Any]]
 
-    # Judge
+    # Selection (majority voting)
     best_sql: str
-    judge_reasoning: str
+    selection_reasoning: str
+    selection_confidence: str
+    selection_method: str
+    selection_needs_refine: bool
+    selected_candidate_diagnostic: dict[str, Any]
 
     # Refiner
     final_sql: str
@@ -45,6 +55,8 @@ class SQLAgentState(TypedDict):
     stage_timings: dict[StageName, float]
     trace_id: str
     warnings: list[str]
+    llm_usage: list[dict[str, Any]]
+    total_cost_usd: float
 
 
 class NodeOutputContract(TypedDict):
@@ -59,8 +71,8 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
         "required_fields": ("full_schema", "filtered_schema", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
     },
-    "decomposer": {
-        "required_fields": ("complexity", "sub_questions", "stage_status"),
+    "sketcher": {
+        "required_fields": ("query_sketch", "query_sketch_text", "stage_status"),
         "optional_fields": ("warnings", "stage_timings"),
     },
     "generator": {
@@ -69,11 +81,18 @@ NODE_OUTPUT_PROTOCOL: dict[StageName, NodeOutputContract] = {
     },
     "execution_filter": {
         "required_fields": ("valid_candidates", "stage_status"),
-        "optional_fields": ("warnings", "stage_timings", "error_message"),
+        "optional_fields": ("warnings", "stage_timings", "error_message", "candidate_diagnostics"),
     },
-    "judge": {
-        "required_fields": ("best_sql", "judge_reasoning", "stage_status"),
-        "optional_fields": ("warnings", "stage_timings"),
+    "voting": {
+        "required_fields": ("best_sql", "selection_reasoning", "stage_status"),
+        "optional_fields": (
+            "warnings",
+            "stage_timings",
+            "selection_confidence",
+            "selection_method",
+            "selection_needs_refine",
+            "selected_candidate_diagnostic",
+        ),
     },
     "refiner": {
         "required_fields": ("final_sql", "execution_result", "refine_attempts", "stage_status"),
@@ -86,10 +105,10 @@ def default_stage_status() -> dict[StageName, StageRunStatus]:
     """Default stage status map for new pipeline run."""
     return {
         "selector": "pending",
-        "decomposer": "pending",
+        "sketcher": "pending",
         "generator": "pending",
         "execution_filter": "pending",
-        "judge": "pending",
+        "voting": "pending",
         "refiner": "pending",
     }
 
@@ -98,10 +117,10 @@ def default_stage_timings() -> dict[StageName, float]:
     """Default stage timing map for new pipeline run."""
     return {
         "selector": 0.0,
-        "decomposer": 0.0,
+        "sketcher": 0.0,
         "generator": 0.0,
         "execution_filter": 0.0,
-        "judge": 0.0,
+        "voting": 0.0,
         "refiner": 0.0,
     }
 
@@ -111,6 +130,7 @@ def make_initial_state(
     question: str,
     db_id: str,
     evidence: Optional[str] = None,
+    schema_root: Optional[str] = None,
     trace_id: Optional[str] = None,
 ) -> SQLAgentState:
     """Build deterministic initial state for graph invocation."""
@@ -118,14 +138,23 @@ def make_initial_state(
         "question": question,
         "db_id": db_id,
         "evidence": evidence,
+        "schema_root": schema_root,
         "full_schema": {},
         "filtered_schema": "",
-        "complexity": "unknown",
-        "sub_questions": [],
+        "retrieved_schema_context": "",
+        "value_hints": [],
+        "column_hints": [],
+        "query_sketch": {},
+        "query_sketch_text": "",
         "candidates": [],
         "valid_candidates": [],
+        "candidate_diagnostics": [],
         "best_sql": "",
-        "judge_reasoning": "",
+        "selection_reasoning": "",
+        "selection_confidence": "unknown",
+        "selection_method": "",
+        "selection_needs_refine": False,
+        "selected_candidate_diagnostic": {},
         "final_sql": "",
         "execution_result": None,
         "refine_attempts": 0,
@@ -134,5 +163,6 @@ def make_initial_state(
         "stage_timings": default_stage_timings(),
         "trace_id": trace_id or str(uuid4()),
         "warnings": [],
+        "llm_usage": [],
+        "total_cost_usd": 0.0,
     }
-

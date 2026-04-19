@@ -10,8 +10,9 @@ from typing import Sequence
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.generator import build_generator_prompt
-from text_to_sql_agent.tools.few_shot import load_few_shot_pool, sample_examples_for_candidate
+from text_to_sql_agent.tools.few_shot import load_few_shot_pool, retrieve_examples_for_candidate
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
+from text_to_sql_agent.tools.value_linker import format_column_hints, format_value_hints
 
 
 def _extract_sql(text: str) -> str:
@@ -32,11 +33,13 @@ def _build_messages(prompt: str) -> Sequence[tuple[str, str]]:
 
 
 async def run_generator(state: SQLAgentState) -> SQLAgentState:
-    """Generate N SQL candidates asynchronously with 5/3 role split."""
+    """Generate N SQL candidates asynchronously."""
     started = time.perf_counter()
     stage_status = dict(state.get("stage_status", {}))
     stage_timings = dict(state.get("stage_timings", {}))
     warnings = list(state.get("warnings", []))
+    llm_usage = list(state.get("llm_usage", []))
+    total_cost_usd = float(state.get("total_cost_usd", 0.0))
     stage_status["generator"] = "running"
 
     try:
@@ -45,13 +48,14 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
         if not pool:
             warnings.append("generator: few-shot pool unavailable; using zero-shot prompts")
 
-        roles = router.generator_roles()
         num_candidates = settings.num_candidates
+        roles = router.generator_roles()
 
-        async def _run_one(idx: int) -> str:
+        async def _run_one(idx: int) -> tuple[str, dict[str, object]]:
             role = roles[idx % len(roles)]
-            examples = sample_examples_for_candidate(
+            examples = await retrieve_examples_for_candidate(
                 pool=pool,
+                question=state["question"],
                 candidate_index=idx,
                 k=settings.few_shot_examples_per_candidate,
                 seed=settings.few_shot_seed,
@@ -59,19 +63,26 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
             )
             prompt = build_generator_prompt(
                 question=state["question"],
+                evidence=state.get("evidence"),
                 filtered_schema=state.get("filtered_schema", ""),
-                complexity=state.get("complexity", "unknown"),
-                sub_questions=state.get("sub_questions", []),
+                query_sketch_text=state.get("query_sketch_text", ""),
                 few_shot_examples=examples,
+                value_hints_text=format_value_hints(state.get("value_hints", [])),
+                column_hints_text=format_column_hints(state.get("column_hints", [])),
             )
-            response = await router.ainvoke(
+            response = await router.ainvoke_with_metadata(
                 role=role,
                 messages=_build_messages(prompt),
+                trace_id=state.get("trace_id"),
+                db_id=state.get("db_id"),
+                stage="generator",
             )
-            return _extract_sql(response)
+            return _extract_sql(response.text), response.usage
 
-        candidates_raw = await asyncio.gather(*[_run_one(i) for i in range(num_candidates)])
-        candidates = [c for c in candidates_raw if c]
+        generation_results = await asyncio.gather(*[_run_one(i) for i in range(num_candidates)])
+        candidates = [sql for sql, _usage in generation_results if sql]
+        llm_usage.extend(usage for _sql, usage in generation_results)
+        total_cost_usd += sum(float(usage.get("cost_usd", 0.0)) for _sql, usage in generation_results)
         if not candidates:
             warnings.append("generator: no SQL candidates produced")
 
@@ -85,6 +96,8 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 "generator": round(time.perf_counter() - started, 4),
             },
             "warnings": warnings,
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
     except Exception as exc:
         stage_status["generator"] = "failed"
@@ -98,5 +111,6 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 "generator": round(time.perf_counter() - started, 4),
             },
             "warnings": [*warnings, f"generator_error: {exc}"],
+            "llm_usage": llm_usage,
+            "total_cost_usd": total_cost_usd,
         }
-

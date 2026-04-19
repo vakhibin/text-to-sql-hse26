@@ -2,36 +2,46 @@
 
 JUDGE_PROMPT = """
 Choose best SQL candidate from valid list for the question.
-Return strict JSON: best_index, reasoning.
+Return strict JSON: best_index, confidence, needs_refine, issues, reasoning.
 """.strip()
 
 
 def build_judge_prompt(
     *,
     question: str,
+    evidence: str | None,
     filtered_schema: str,
-    candidates: list[str],
+    selectable_candidates: list[dict[str, object]],
 ) -> str:
-    """Build strict-json judge prompt over candidate SQL list."""
-    items = [f"{idx}: {sql}" for idx, sql in enumerate(candidates)]
-    return f"""
-You are an expert SQL evaluator.
+    """Build a lean judge prompt: question + evidence + schema + candidate SQL."""
+    candidate_lines = []
+    for idx, candidate in enumerate(selectable_candidates):
+        summary = candidate.get("analysis_summary", "")
+        summary_suffix = f"  -- {summary}" if summary and summary != "-" else ""
+        candidate_lines.append(f"{idx}: {candidate.get('sql', '')}{summary_suffix}")
 
-Question:
-{question}
+    evidence_block = evidence.strip() if evidence and evidence.strip() else "(none)"
+
+    return f"""
+You are an expert SQL evaluator. Pick the best candidate.
+
+Question: {question}
+Evidence: {evidence_block}
 
 mSchema:
 {filtered_schema}
 
-Candidate SQL queries:
-{chr(10).join(items)}
+Candidates (all passed execution):
+{chr(10).join(candidate_lines)}
 
-Select the best candidate index for correctness and relevance.
-Return STRICT JSON in this exact format:
-{{
-  "best_index": 0,
-  "reasoning": "one short sentence"
-}}
-Do not include markdown or extra text.
+Policy:
+- Pick the candidate whose output shape, column order, and filters best match the question.
+- Prefer fewer joins / tables when they answer the question equally well.
+- If the best candidate has a minor fixable issue, set needs_refine=true and list the issue.
+- Issue vocabulary: projection_order_mismatch, wrong_output_shape, unnecessary_join,
+  literal_value_risk, duplicate_row_risk, aggregation_shape_risk, table_selection_risk
+
+Return STRICT JSON (no markdown):
+{{"best_index": 0, "confidence": "high", "needs_refine": false, "issues": [], "reasoning": "..."}}
 """.strip()
 
