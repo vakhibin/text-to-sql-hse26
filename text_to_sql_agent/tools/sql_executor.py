@@ -9,6 +9,11 @@ from typing import Any, Optional
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from text_to_sql_agent.tools.sql_guardrail import (
+    WriteSQLRejected,
+    assert_read_only,
+)
+
 
 @dataclass
 class SQLExecutionResult:
@@ -47,8 +52,24 @@ async def execute_sql(
     sql: str,
     *,
     timeout_seconds: int = 20,
+    allow_write: bool = False,
 ) -> SQLExecutionResult:
-    """Execute one SQL statement via SQLAlchemy in isolated try/except."""
+    """Execute one SQL statement via SQLAlchemy in isolated try/except.
+
+    By default a read-only guardrail rejects any non-SELECT SQL before it
+    reaches SQLite. Pass ``allow_write=True`` only from user-confirmed code
+    paths (e.g. the future ``/execute_user_confirmed`` endpoint).
+    """
+    if not allow_write:
+        try:
+            assert_read_only(sql)
+        except WriteSQLRejected as exc:
+            return SQLExecutionResult(
+                success=False,
+                rows=None,
+                error=f"write SQL rejected by guardrail: {exc}",
+            )
+
     engine = create_async_engine(_to_sqlalchemy_url(db_path_or_url), future=True)
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -56,9 +77,18 @@ async def execute_sql(
         _apply_sqlite_text_factory(dbapi_connection)
 
     try:
-        async with engine.connect() as conn:
-            result = await asyncio.wait_for(conn.execute(text(sql)), timeout=timeout_seconds)
-            rows = list(result.fetchall()) if result.returns_rows else []
+        if allow_write:
+            async with engine.begin() as conn:
+                result = await asyncio.wait_for(
+                    conn.execute(text(sql)), timeout=timeout_seconds
+                )
+                rows = list(result.fetchall()) if result.returns_rows else []
+        else:
+            async with engine.connect() as conn:
+                result = await asyncio.wait_for(
+                    conn.execute(text(sql)), timeout=timeout_seconds
+                )
+                rows = list(result.fetchall()) if result.returns_rows else []
         return SQLExecutionResult(success=True, rows=rows, error=None)
     except Exception as exc:  # pragma: no cover - runtime/db path
         return SQLExecutionResult(success=False, rows=None, error=str(exc))
