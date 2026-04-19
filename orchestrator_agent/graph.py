@@ -23,8 +23,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from services.orchestrator_api.agent import make_agent_node
-from services.orchestrator_api.state import OrchestratorState
+from orchestrator_agent.agent import make_agent_node
+from orchestrator_agent.state import OrchestratorState
 
 
 def build_orchestrator_graph(

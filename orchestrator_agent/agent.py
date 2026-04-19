@@ -19,7 +19,7 @@ from typing import Any
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 
-from services.orchestrator_api.state import OrchestratorState
+from orchestrator_agent.state import OrchestratorState
 
 _SYSTEM_PROMPT_HEADER = (
     "You are a conversational assistant for a text-to-SQL system. Users ask "

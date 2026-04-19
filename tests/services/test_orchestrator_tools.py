@@ -24,11 +24,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from services.orchestrator_api import agent as agent_mod
-from services.orchestrator_api.clients.text_to_sql import TextToSQLClient
-from services.orchestrator_api.graph import build_orchestrator_graph
-from services.orchestrator_api.memory import create_checkpointer
-from services.orchestrator_api.tools.core import make_core_tools
+from orchestrator_agent import agent as agent_mod
+from orchestrator_agent.clients.text_to_sql import TextToSQLClient
+from orchestrator_agent.graph import build_orchestrator_graph
+from orchestrator_agent.memory import create_checkpointer
+from orchestrator_agent.tools.core import make_core_tools
 
 
 class ScriptedToolCallLLM(BaseChatModel):

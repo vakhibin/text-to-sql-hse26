@@ -3,6 +3,15 @@
 Microservices for the conversational text-to-SQL agent platform. Each service
 runs independently and communicates over HTTP.
 
+The two agent runtimes live at repo root as reusable libraries, and each
+FastAPI service is a thin HTTP wrapper over its corresponding runtime:
+
+- `text_to_sql_agent/` → `services/text_to_sql_api/`
+- `orchestrator_agent/` → `services/orchestrator_api/`
+
+This mirrors the split so either runtime can be driven from notebooks, CLI
+tools, or tests without pulling in FastAPI.
+
 ## Layout
 
 - `text_to_sql_api/` — FastAPI wrapper around the core LangGraph text-to-SQL

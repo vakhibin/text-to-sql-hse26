@@ -26,7 +26,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
-from services.orchestrator_api.clients.text_to_sql import (
+from orchestrator_agent.clients.text_to_sql import (
     TextToSQLAPIError,
     TextToSQLClient,
 )

@@ -1,7 +1,8 @@
-"""Runtime settings for the orchestrator service.
+"""Runtime settings for the orchestrator agent.
 
-Kept separate from the core ``text_to_sql_agent.config`` so the two services
-can evolve their env contracts independently.
+Symmetric with ``text_to_sql_agent.config``: owns the env contract for the
+orchestrator runtime (HTTP target, timeouts, tool-step budget) so neither
+the FastAPI wrapper nor downstream callers need to hardcode defaults.
 """
 
 from __future__ import annotations

@@ -23,10 +23,10 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from services.orchestrator_api import agent as agent_mod
-from services.orchestrator_api.graph import build_orchestrator_graph
+from orchestrator_agent import agent as agent_mod
+from orchestrator_agent.graph import build_orchestrator_graph
+from orchestrator_agent.memory import create_checkpointer
 from services.orchestrator_api.main import app
-from services.orchestrator_api.memory import create_checkpointer
 
 
 class MemoryEchoLLM(BaseChatModel):

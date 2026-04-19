@@ -23,14 +23,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from services.orchestrator_api.clients.text_to_sql import TextToSQLClient
-from services.orchestrator_api.graph import build_orchestrator_graph
-from services.orchestrator_api.memory import create_checkpointer
+from orchestrator_agent.clients.text_to_sql import TextToSQLClient
+from orchestrator_agent.config import settings
+from orchestrator_agent.graph import build_orchestrator_graph
+from orchestrator_agent.memory import create_checkpointer
+from orchestrator_agent.tools import make_core_tools
 from services.orchestrator_api.routers import chat as chat_router
 from services.orchestrator_api.routers import health as health_router
 from services.orchestrator_api.routers import sessions as sessions_router
-from services.orchestrator_api.settings import settings
-from services.orchestrator_api.tools import make_core_tools
 
 SERVICE_VERSION = "0.1.0"
 

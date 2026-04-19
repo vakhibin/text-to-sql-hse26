@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import pytest
 
-from services.orchestrator_api.clients.text_to_sql import (
+from orchestrator_agent.clients.text_to_sql import (
     TextToSQLAPIError,
     TextToSQLClient,
 )

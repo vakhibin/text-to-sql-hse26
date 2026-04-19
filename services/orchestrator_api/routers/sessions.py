@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 
-from services.orchestrator_api.memory import CheckpointerHandle
+from orchestrator_agent.memory import CheckpointerHandle
 from services.orchestrator_api.message_utils import message_to_chat
 from services.orchestrator_api.schemas import (
     HistoryMessage,
