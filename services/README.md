@@ -32,10 +32,21 @@ tools, or tests without pulling in FastAPI.
     active db, last SQL, etc.)
   - `DELETE /sessions/{session_id}` — best-effort session reset
 
-  Tools available to the LLM (Phase 4):
-  - `run_text_to_sql(question, db_id?, evidence?)` — full pipeline
-  - `execute_sql(sql, db_id?)` — read-only execution
-  - `explain_sql(sql, db_id?)` — plain-English explanation
+  Tools available to the LLM:
+  - Core (Phase 4):
+    - `run_text_to_sql(question, db_id?, evidence?)` — full pipeline
+    - `execute_sql(sql, db_id?)` — read-only execution
+    - `explain_sql(sql, db_id?)` — plain-English explanation
+  - Discovery (Phase 5):
+    - `list_databases()` — catalog overview (db_ids + table counts)
+    - `describe_database(db_id?)` — schema dump for one database
+    - `switch_database(db_id)` — set the active database for the rest of
+      the session; validates existence and clears stale `last_sql` / rows
+    - `sample_table(table_name, db_id?, limit=5)` — preview first rows of
+      a table (read-only, identifier-validated)
+    - `search_table_values(table_name, column_name, search_term, db_id?)`
+      — look up real literal values in a column so the LLM can use correct
+      casing/spelling in `WHERE` clauses
 
   Env knobs:
   - `ORCH_CHECKPOINTER_BACKEND` — `sqlite` (default) or `postgres` (Phase 10)

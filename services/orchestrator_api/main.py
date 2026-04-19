@@ -27,7 +27,7 @@ from orchestrator_agent.clients.text_to_sql import TextToSQLClient
 from orchestrator_agent.config import settings
 from orchestrator_agent.graph import build_orchestrator_graph
 from orchestrator_agent.memory import create_checkpointer
-from orchestrator_agent.tools import make_core_tools
+from orchestrator_agent.tools import make_all_tools
 from services.orchestrator_api.routers import chat as chat_router
 from services.orchestrator_api.routers import health as health_router
 from services.orchestrator_api.routers import sessions as sessions_router
@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
         base_url=settings.text_to_sql_api_url,
         timeout_s=settings.text_to_sql_api_timeout_s,
     )
-    tools = make_core_tools(client)
+    tools = make_all_tools(client)
     graph = build_orchestrator_graph(handle.saver, tools=tools)
 
     app.state.checkpointer = handle

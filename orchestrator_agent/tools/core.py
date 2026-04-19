@@ -30,56 +30,17 @@ from orchestrator_agent.clients.text_to_sql import (
     TextToSQLAPIError,
     TextToSQLClient,
 )
+from orchestrator_agent.tools._shared import (
+    ROW_PREVIEW_LIMIT as _ROW_PREVIEW_LIMIT,
+    format_rows_preview as _format_rows_preview,
+    resolve_db_id as _resolve_db_id,
+    tool_error as _tool_error,
+)
 from services.text_to_sql_api.schemas import (
     ExecuteResponse,
     ExplainResponse,
     RunResponse,
 )
-
-_ROW_PREVIEW_LIMIT = 10
-
-
-def _resolve_db_id(
-    state: dict[str, Any] | None, explicit: str | None
-) -> tuple[str | None, str | None]:
-    """Return ``(db_id, error)`` — error is non-None when no db can be resolved."""
-    if explicit:
-        return explicit, None
-    if state and state.get("active_db_id"):
-        return state["active_db_id"], None
-    return None, (
-        "No database selected. Ask the user which database to use "
-        "or call a discovery tool to list databases, then retry."
-    )
-
-
-def _format_rows_preview(
-    columns: list[str] | None,
-    rows: list[list[Any]] | None,
-    limit: int = _ROW_PREVIEW_LIMIT,
-) -> str:
-    if not rows:
-        return "(no rows)"
-    header = " | ".join(columns) if columns else ""
-    preview_rows = rows[:limit]
-    body = "\n".join(" | ".join("" if v is None else str(v) for v in row) for row in preview_rows)
-    truncated = "" if len(rows) <= limit else f"\n... ({len(rows) - limit} more rows)"
-    return (f"{header}\n{body}" if header else body) + truncated
-
-
-def _tool_error(tool_call_id: str, name: str, message: str) -> Command:
-    return Command(
-        update={
-            "messages": [
-                ToolMessage(
-                    content=message,
-                    tool_call_id=tool_call_id,
-                    name=name,
-                    status="error",
-                )
-            ]
-        }
-    )
 
 
 def _run_summary(resp: RunResponse) -> str:
