@@ -6,7 +6,14 @@ runs independently and communicates over HTTP.
 ## Layout
 
 - `text_to_sql_api/` — FastAPI wrapper around the core LangGraph text-to-SQL
-  pipeline. Exposes `/run`, `/execute`, `/refine`, `/explain`, `/databases`.
+  pipeline. Endpoints:
+  - `GET  /health`
+  - `GET  /databases` — list available databases under the configured schema root
+  - `GET  /databases/{db_id}/schema` — full schema dump (tables, columns, PK/FK, sample values)
+  - `POST /run` — run the full LangGraph pipeline: question → SQL → execute → rows
+  - `POST /execute` — execute a given SQL (read-only, guardrail-enforced)
+  - `POST /refine` — AST repair + tool-augmented LLM fix on a given SQL
+  - `POST /explain` — natural-language explanation of a given SQL
 - `orchestrator_api/` — FastAPI + LangGraph conversational agent with
   tool-calling, session memory, and user-confirmed write-SQL flow.
 - `ui/` — Streamlit chat interface that talks to `orchestrator_api`.

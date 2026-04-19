@@ -37,6 +37,16 @@ def _schema_cache_key(
     return (_root_key(spider_root), db_id, with_sample_values, sample_limit)
 
 
+def list_database_ids(spider_root: str | Path | None = None) -> list[str]:
+    """Return all ``db_id`` values declared in ``tables.json`` under ``spider_root``.
+
+    Used by the text-to-SQL service to expose the database catalogue over HTTP.
+    """
+    root = Path(spider_root) if spider_root else _default_spider_root()
+    tables = _load_tables_json(root)
+    return [str(item.get("db_id")) for item in tables if item.get("db_id")]
+
+
 def _load_tables_json(spider_root: Path) -> list[dict[str, Any]]:
     root = _root_key(spider_root)
     with _cache_lock:

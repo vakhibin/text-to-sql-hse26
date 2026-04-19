@@ -20,6 +20,7 @@ class SQLExecutionResult:
     success: bool
     rows: Optional[list[tuple[Any, ...]]] = None
     error: Optional[str] = None
+    columns: Optional[list[str]] = None
 
 
 def _to_sqlalchemy_url(db_path_or_url: str) -> str:
@@ -83,13 +84,15 @@ async def execute_sql(
                     conn.execute(text(sql)), timeout=timeout_seconds
                 )
                 rows = list(result.fetchall()) if result.returns_rows else []
+                columns = list(result.keys()) if result.returns_rows else None
         else:
             async with engine.connect() as conn:
                 result = await asyncio.wait_for(
                     conn.execute(text(sql)), timeout=timeout_seconds
                 )
                 rows = list(result.fetchall()) if result.returns_rows else []
-        return SQLExecutionResult(success=True, rows=rows, error=None)
+                columns = list(result.keys()) if result.returns_rows else None
+        return SQLExecutionResult(success=True, rows=rows, error=None, columns=columns)
     except Exception as exc:  # pragma: no cover - runtime/db path
         return SQLExecutionResult(success=False, rows=None, error=str(exc))
     finally:
