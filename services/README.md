@@ -23,9 +23,17 @@ runs independently and communicates over HTTP.
     active db, last SQL, etc.)
   - `DELETE /sessions/{session_id}` — best-effort session reset
 
+  Tools available to the LLM (Phase 4):
+  - `run_text_to_sql(question, db_id?, evidence?)` — full pipeline
+  - `execute_sql(sql, db_id?)` — read-only execution
+  - `explain_sql(sql, db_id?)` — plain-English explanation
+
   Env knobs:
   - `ORCH_CHECKPOINTER_BACKEND` — `sqlite` (default) or `postgres` (Phase 10)
   - `ORCH_SQLITE_PATH` — override default `.cache/orchestrator/sessions.sqlite`
+  - `TEXT_TO_SQL_API_URL` — base URL of `text_to_sql_api` (default `http://localhost:8001`)
+  - `TEXT_TO_SQL_API_TIMEOUT_S` — per-request timeout (default `120`)
+  - `ORCHESTRATOR_MAX_TOOL_STEPS` — max tool-calling iterations per turn (default `6`)
 - `ui/` — Streamlit chat interface that talks to `orchestrator_api`.
 
 ## Run locally (dev)

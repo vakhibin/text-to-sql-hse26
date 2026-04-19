@@ -1,12 +1,15 @@
 """LLM-backed agent node for the orchestrator LangGraph.
 
-Phase 3: no tools yet. The node simply prepends a system prompt to the
-accumulated conversation and asks the LLM to respond. Tool binding is added
-in Phase 4 without changing the node signature.
+The agent node:
 
-The chat model is resolved lazily so tests can inject a fake model via
-``set_chat_model(fake)`` without touching the real LLMRouter (which
-requires ``OPENROUTER_API_KEY``).
+1. Resolves a chat model (real LLMRouter in prod; injected fake in tests).
+2. Binds the provided tools to the model so the LLM can emit ``tool_calls``.
+3. Builds a dynamic system prompt that surfaces small pieces of state the LLM
+   needs for good decisions (active database, last SQL it produced). Keeping
+   this prompt in one place avoids leaking UI-level concerns into the graph.
+
+Tests inject a fake model via ``set_chat_model(...)``; the bound-tool wrapping
+is applied on top of whatever model is returned.
 """
 
 from __future__ import annotations
@@ -18,18 +21,40 @@ from langchain_core.messages import SystemMessage
 
 from services.orchestrator_api.state import OrchestratorState
 
-_SYSTEM_PROMPT = (
-    "You are a helpful conversational assistant for a text-to-SQL system. "
-    "Users ask questions about their databases in natural language. "
-    "You hold a multi-turn dialogue and remember prior context in this session "
-    "(e.g. which database is active and what SQL you last produced).\n\n"
-    "Phase 3 limitations (will be lifted in later phases):\n"
-    "- You do not yet have tools for querying databases or running SQL.\n"
-    "- If the user asks a question that would require executing SQL, explain "
-    "that tools are not yet wired up and that you can still help clarify the "
-    "request or plan the SQL in words.\n\n"
-    "Keep responses concise and plain-spoken."
+_SYSTEM_PROMPT_HEADER = (
+    "You are a conversational assistant for a text-to-SQL system. Users ask "
+    "questions about their databases in natural language. You keep a "
+    "multi-turn dialogue and remember the chosen database and the last SQL "
+    "you produced.\n\n"
+    "You have tools to:\n"
+    "- run the full text-to-SQL pipeline on a natural-language question,\n"
+    "- execute a SQL SELECT directly (read-only),\n"
+    "- explain a given SQL statement in plain English.\n\n"
+    "Rules:\n"
+    "- Prefer calling tools over guessing. If the user asks anything that "
+    "requires data, call a tool.\n"
+    "- Write queries (INSERT/UPDATE/DELETE/DDL) are NOT executed automatically. "
+    "If the user asks for one, reply that you can produce it but the user must "
+    "explicitly confirm before it runs.\n"
+    "- Keep answers concise and grounded in the tool output. If a tool fails, "
+    "summarise the error and suggest a next step.\n"
+    "- Never invent column or table names: rely on tool responses."
 )
+
+
+def _build_context_suffix(state: OrchestratorState) -> str:
+    """Turn small state artifacts into a short context block for the LLM."""
+    bits: list[str] = []
+    active_db = state.get("active_db_id")
+    last_sql = state.get("last_sql")
+    if active_db:
+        bits.append(f"Active database: {active_db}")
+    if last_sql:
+        bits.append(f"Last SQL:\n{last_sql}")
+    if not bits:
+        return ""
+    return "\n\nSession context:\n" + "\n\n".join(bits)
+
 
 _LLM: BaseChatModel | None = None
 
@@ -55,10 +80,21 @@ def get_chat_model() -> BaseChatModel:
     return _LLM
 
 
-async def agent_node(state: OrchestratorState) -> dict[str, Any]:
-    """Call the LLM with a system prompt + accumulated conversation."""
-    messages = list(state.get("messages") or [])
-    llm = get_chat_model()
-    prompt = [SystemMessage(content=_SYSTEM_PROMPT), *messages]
-    response = await llm.ainvoke(prompt)
-    return {"messages": [response]}
+def make_agent_node(tools: list):
+    """Build an agent node bound to the given tool set.
+
+    The returned coroutine captures ``tools`` in closure so tests can build a
+    node against mocked tools without touching the module-level chat-model
+    cache for tool selection.
+    """
+
+    async def agent_node(state: OrchestratorState) -> dict[str, Any]:
+        messages = list(state.get("messages") or [])
+        llm = get_chat_model()
+        bound = llm.bind_tools(tools) if tools else llm
+        system_text = _SYSTEM_PROMPT_HEADER + _build_context_suffix(state)
+        prompt = [SystemMessage(content=system_text), *messages]
+        response = await bound.ainvoke(prompt)
+        return {"messages": [response]}
+
+    return agent_node
