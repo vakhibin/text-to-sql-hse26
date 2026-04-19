@@ -15,7 +15,17 @@ runs independently and communicates over HTTP.
   - `POST /refine` — AST repair + tool-augmented LLM fix on a given SQL
   - `POST /explain` — natural-language explanation of a given SQL
 - `orchestrator_api/` — FastAPI + LangGraph conversational agent with
-  tool-calling, session memory, and user-confirmed write-SQL flow.
+  tool-calling, session memory (SQLite checkpointer by default; Postgres
+  in Phase 10), and the user-confirmed write-SQL flow (Phase 9). Endpoints:
+  - `GET    /health`
+  - `POST   /chat` — one conversational turn per call
+  - `GET    /sessions/{session_id}` — inspect current state (messages,
+    active db, last SQL, etc.)
+  - `DELETE /sessions/{session_id}` — best-effort session reset
+
+  Env knobs:
+  - `ORCH_CHECKPOINTER_BACKEND` — `sqlite` (default) or `postgres` (Phase 10)
+  - `ORCH_SQLITE_PATH` — override default `.cache/orchestrator/sessions.sqlite`
 - `ui/` — Streamlit chat interface that talks to `orchestrator_api`.
 
 ## Run locally (dev)

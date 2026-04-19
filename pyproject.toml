@@ -32,6 +32,7 @@ dependencies = [
     "uvicorn[standard]>=0.41.0",
     "httpx>=0.28.1",
     "streamlit>=1.56.0",
+    "langgraph-checkpoint-sqlite>=3.0.3",
 ]
 
 [dependency-groups]
