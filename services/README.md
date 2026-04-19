@@ -22,6 +22,7 @@ tools, or tests without pulling in FastAPI.
   - `POST /run` — run the full LangGraph pipeline: question → SQL → execute → rows
   - `POST /execute` — execute a given SQL (read-only, guardrail-enforced)
   - `POST /refine` — AST repair + tool-augmented LLM fix on a given SQL
+  - `POST /modify` — natural-language edit to a SQL query (single LLM call)
   - `POST /explain` — natural-language explanation of a given SQL
 - `orchestrator_api/` — FastAPI + LangGraph conversational agent with
   tool-calling, session memory (SQLite checkpointer by default; Postgres
@@ -47,6 +48,18 @@ tools, or tests without pulling in FastAPI.
     - `search_table_values(table_name, column_name, search_term, db_id?)`
       — look up real literal values in a column so the LLM can use correct
       casing/spelling in `WHERE` clauses
+  - SQL manipulation + history (Phase 6):
+    - `fix_sql(sql?, db_id?, error_hint?)` — delegate to `/refine`; defaults
+      to `last_sql` / `active_db_id`
+    - `modify_sql(instruction, sql?, db_id?)` — delegate to `/modify` for
+      user-driven edits (distinct from error repair)
+    - `list_recent(limit=10)` — dump session `sql_history` (newest first)
+    - `rerun(index=1)` — re-execute a past query by 1-based history index;
+      uses the db_id stored on the entry. Falls back to `last_sql` when
+      history is empty.
+
+  Each tool that touches SQL appends an entry to `sql_history` (capped at
+  20) so `list_recent` and `rerun` stay consistent across turns.
 
   Env knobs:
   - `ORCH_CHECKPOINTER_BACKEND` — `sqlite` (default) or `postgres` (Phase 10)

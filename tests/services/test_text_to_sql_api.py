@@ -357,6 +357,100 @@ async def test_explain_returns_explanation(
     assert body["cost_usd"] == pytest.approx(0.0007)
 
 
+@pytest.mark.asyncio
+async def test_modify_returns_modified_sql(
+    api_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_modify(**kwargs: object) -> dict[str, object]:
+        return {
+            "trace_id": "trace-mod",
+            "db_id": kwargs["db_id"],
+            "original_sql": kwargs["sql"],
+            "modified_sql": "SELECT * FROM students WHERE year = 2023",
+            "changed": True,
+            "cost_usd": 0.001,
+            "elapsed_s": 0.3,
+        }
+
+    monkeypatch.setattr(pipeline_adapter, "modify_sql_standalone", fake_modify)
+
+    resp = await api_client.post(
+        "/modify",
+        json={
+            "sql": "SELECT * FROM students",
+            "instruction": "only 2023",
+            "db_id": "toy",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["trace_id"] == "trace-mod"
+    assert body["changed"] is True
+    assert "2023" in body["modified_sql"]
+
+
+@pytest.mark.asyncio
+async def test_modify_unchanged_when_llm_returns_same_sql(
+    api_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_modify(**kwargs: object) -> dict[str, object]:
+        return {
+            "trace_id": "t",
+            "db_id": kwargs["db_id"],
+            "original_sql": kwargs["sql"],
+            "modified_sql": kwargs["sql"],
+            "changed": False,
+            "cost_usd": 0.0,
+            "elapsed_s": 0.1,
+        }
+
+    monkeypatch.setattr(pipeline_adapter, "modify_sql_standalone", fake_modify)
+
+    resp = await api_client.post(
+        "/modify",
+        json={"sql": "SELECT 1", "instruction": "no-op", "db_id": "toy"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["changed"] is False
+    assert body["modified_sql"] == "SELECT 1"
+
+
+@pytest.mark.asyncio
+async def test_modify_unknown_db_returns_404(
+    api_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_modify(**kwargs: object) -> dict[str, object]:
+        raise ValueError("unknown db_id='ghost'")
+
+    monkeypatch.setattr(pipeline_adapter, "modify_sql_standalone", fake_modify)
+
+    resp = await api_client.post(
+        "/modify",
+        json={"sql": "SELECT 1", "instruction": "x", "db_id": "ghost"},
+    )
+    assert resp.status_code == 404
+
+
+# ---- /modify: fence stripping unit ---------------------------------------
+
+
+def test_strip_sql_fences_removes_markdown_block() -> None:
+    text = "```sql\nSELECT 1\n```"
+    assert pipeline_adapter._strip_sql_fences(text) == "SELECT 1"
+
+
+def test_strip_sql_fences_trims_trailing_semicolon() -> None:
+    assert pipeline_adapter._strip_sql_fences("SELECT 1 ;  ") == "SELECT 1"
+
+
+def test_strip_sql_fences_passthrough_plain_sql() -> None:
+    assert pipeline_adapter._strip_sql_fences("  SELECT 1  ") == "SELECT 1"
+
+
 # ---- /execute helper sanity --------------------------------------------
 
 

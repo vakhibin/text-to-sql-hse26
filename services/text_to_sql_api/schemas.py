@@ -124,6 +124,29 @@ class ExplainResponse(BaseModel):
     elapsed_s: float = 0.0
 
 
+# ---- /modify -------------------------------------------------------------
+
+
+class ModifyRequest(BaseModel):
+    sql: str = Field(..., min_length=1)
+    instruction: str = Field(
+        ..., min_length=1, description="Natural-language instruction describing the change."
+    )
+    db_id: str = Field(..., min_length=1)
+    schema_root: Optional[str] = None
+    trace_id: Optional[str] = None
+
+
+class ModifyResponse(BaseModel):
+    trace_id: str
+    db_id: str
+    original_sql: str
+    modified_sql: str
+    changed: bool
+    cost_usd: float = 0.0
+    elapsed_s: float = 0.0
+
+
 # ---- /databases ----------------------------------------------------------
 
 

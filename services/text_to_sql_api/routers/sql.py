@@ -19,6 +19,8 @@ from services.text_to_sql_api.schemas import (
     ExecuteResponse,
     ExplainRequest,
     ExplainResponse,
+    ModifyRequest,
+    ModifyResponse,
     RefineRequest,
     RefineResponse,
     RunRequest,
@@ -196,6 +198,34 @@ async def refine(req: RefineRequest) -> RefineResponse:
         warnings=warnings,
         cost_usd=cost_usd,
         elapsed_s=elapsed,
+    )
+
+
+@router.post("/modify", response_model=ModifyResponse)
+async def modify(req: ModifyRequest) -> ModifyResponse:
+    try:
+        out = await pipeline.modify_sql_standalone(
+            sql=req.sql,
+            instruction=req.instruction,
+            db_id=req.db_id,
+            schema_root=req.schema_root,
+            trace_id=req.trace_id,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - surfaced to caller
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"modify failed: {exc}"},
+        )
+    return ModifyResponse(
+        trace_id=str(out["trace_id"]),
+        db_id=str(out["db_id"]),
+        original_sql=str(out["original_sql"]),
+        modified_sql=str(out["modified_sql"]),
+        changed=bool(out["changed"]),
+        cost_usd=float(out.get("cost_usd") or 0.0),
+        elapsed_s=float(out.get("elapsed_s") or 0.0),
     )
 
 

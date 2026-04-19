@@ -18,6 +18,39 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 ROW_PREVIEW_LIMIT = 10
+SQL_HISTORY_CAP = 20
+
+
+def append_history(
+    state: dict[str, Any] | None,
+    *,
+    sql: str,
+    db_id: str | None,
+    source: str,
+    executed: bool,
+    row_count: int | None = None,
+    cap: int = SQL_HISTORY_CAP,
+) -> list[dict[str, Any]]:
+    """Return a new ``sql_history`` list with one entry appended and capped.
+
+    Tools read the current list from injected state, call this, and include
+    the returned list in their ``Command(update=...)``. There is no reducer
+    so updates replace the whole list — read-append-write is sequential and
+    safe because tool calls run one at a time.
+    """
+    current = list((state or {}).get("sql_history") or [])
+    entry: dict[str, Any] = {
+        "sql": sql,
+        "db_id": db_id,
+        "source": source,
+        "executed": bool(executed),
+    }
+    if row_count is not None:
+        entry["row_count"] = row_count
+    current.append(entry)
+    if len(current) > cap:
+        current = current[-cap:]
+    return current
 
 
 def resolve_db_id(

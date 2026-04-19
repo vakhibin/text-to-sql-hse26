@@ -18,6 +18,7 @@ from services.text_to_sql_api.schemas import (
     DatabasesResponse,
     ExecuteResponse,
     ExplainResponse,
+    ModifyResponse,
     RefineResponse,
     RunResponse,
     SchemaResponse,
@@ -145,6 +146,25 @@ class TextToSQLClient:
         }
         data = await self._post("/refine", {k: v for k, v in payload.items() if v is not None})
         return RefineResponse.model_validate(data)
+
+    async def modify(
+        self,
+        *,
+        sql: str,
+        instruction: str,
+        db_id: str,
+        schema_root: str | None = None,
+        trace_id: str | None = None,
+    ) -> ModifyResponse:
+        payload = {
+            "sql": sql,
+            "instruction": instruction,
+            "db_id": db_id,
+            "schema_root": schema_root,
+            "trace_id": trace_id,
+        }
+        data = await self._post("/modify", {k: v for k, v in payload.items() if v is not None})
+        return ModifyResponse.model_validate(data)
 
     async def explain(
         self,

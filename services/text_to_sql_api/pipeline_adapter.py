@@ -161,6 +161,89 @@ async def refine_sql_standalone(
     }
 
 
+# ---- /modify -------------------------------------------------------------
+
+_MODIFY_SYSTEM = (
+    "You are a SQLite SQL rewriter. Given an existing SQL query, a database "
+    "schema, and a natural-language instruction describing a desired change, "
+    "produce a single modified SQL query that satisfies the instruction.\n\n"
+    "Hard rules:\n"
+    "- Output ONLY the SQL. No prose, no markdown fences, no comments.\n"
+    "- Stay in SQLite dialect.\n"
+    "- Do not invent tables or columns that are not present in the provided "
+    "schema; prefer the original identifiers when the instruction is "
+    "ambiguous.\n"
+    "- If the instruction is unsafe (writes/DDL) or impossible given the "
+    "schema, return the original SQL unchanged."
+)
+
+
+def _strip_sql_fences(text: str) -> str:
+    """Strip ```sql fences and surrounding whitespace from an LLM response."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return stripped.rstrip(";").strip()
+
+
+async def modify_sql_standalone(
+    *,
+    sql: str,
+    instruction: str,
+    db_id: str,
+    schema_root: str | None,
+    trace_id: str | None,
+) -> dict[str, Any]:
+    """Apply a natural-language modification to ``sql`` via a single LLM call.
+
+    Unlike ``/refine`` (which is for error repair), this endpoint is for
+    user-driven edits like "add a WHERE clause for 2023" or "group by year
+    instead of month".
+    """
+    started = time.perf_counter()
+    root = _resolve_schema_root(schema_root)
+    try:
+        schema = await load_schema(db_id, spider_root=root, with_sample_values=False)
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
+    schema_text = schema_to_mschema(schema, schema_root=root, with_sample_values=False)
+
+    user_prompt = (
+        f"Schema (compact):\n{schema_text}\n\n"
+        f"Current SQL:\n{sql}\n\n"
+        f"Instruction:\n{instruction}\n\n"
+        "Return ONLY the modified SQL."
+    )
+
+    router = _get_router()
+    trace = trace_id or str(uuid4())
+    result = await router.ainvoke_with_metadata(
+        ModelRole.REFINER,
+        messages=[("system", _MODIFY_SYSTEM), ("user", user_prompt)],
+        trace_id=trace,
+        db_id=db_id,
+        stage="modify",
+    )
+    modified = _strip_sql_fences(result.text)
+    if not modified:
+        modified = sql
+    elapsed = round(time.perf_counter() - started, 4)
+    return {
+        "trace_id": trace,
+        "db_id": db_id,
+        "original_sql": sql,
+        "modified_sql": modified,
+        "changed": modified.strip() != sql.strip(),
+        "cost_usd": float(result.usage.get("cost_usd") or 0.0),
+        "elapsed_s": elapsed,
+    }
+
+
 # ---- /explain -----------------------------------------------------------
 
 _EXPLAIN_SYSTEM = (

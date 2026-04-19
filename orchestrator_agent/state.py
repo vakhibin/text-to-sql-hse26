@@ -13,6 +13,10 @@ Design notes:
   "conversation artifacts" that tools populate and subsequent turns
   consume. They are intentionally scalar and small so the checkpointer
   persists them cheaply.
+- ``sql_history`` is an append-only, capped list of executed / produced SQL
+  entries. Tools replace the whole list on update (there is no reducer) —
+  each tool reads the current list from injected state, appends, and caps
+  before writing. This keeps the value checkpointer-friendly.
 - ``pending_confirmation`` is reserved for the Phase 9 write-SQL flow.
 """
 
@@ -34,5 +38,7 @@ class OrchestratorState(TypedDict, total=False):
     last_sql: Optional[str]
     last_rows_preview: Optional[list[list[Any]]]
     last_rows_columns: Optional[list[str]]
+
+    sql_history: list[dict[str, Any]]
 
     pending_confirmation: Optional[dict[str, Any]]
