@@ -6,6 +6,8 @@ import json
 import re
 import time
 
+from pydantic import BaseModel, Field
+
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.judge import build_judge_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
@@ -20,6 +22,14 @@ _VALID_ISSUES = {
     "aggregation_shape_risk",
     "table_selection_risk",
 }
+
+
+class JudgeStructuredOutput(BaseModel):
+    best_index: int
+    reasoning: str = ""
+    confidence: str = "medium"
+    needs_refine: bool = False
+    issues: list[str] = Field(default_factory=list)
 
 
 def _extract_json_blob(text: str) -> str:
@@ -153,15 +163,28 @@ async def run_judge(state: SQLAgentState) -> SQLAgentState:
             trace_id=state.get("trace_id"),
             db_id=state.get("db_id"),
             stage="judge",
+            structured_output=JudgeStructuredOutput,
         )
         response_text = response.text
         llm_usage.append(response.usage)
         total_cost_usd += float(response.usage.get("cost_usd", 0.0))
 
-        best_idx, reasoning, confidence, needs_refine, issues, parse_warning = _parse_judge_response(
-            response_text,
-            len(pool),
-        )
+        if response.structured is not None:
+            out = response.structured
+            best_idx = out.best_index
+            reasoning = str(out.reasoning or "").strip()
+            confidence = _normalize_confidence(out.confidence)
+            needs_refine = bool(out.needs_refine)
+            issues = _normalize_issues(out.issues)
+            parse_warning = None
+            if not isinstance(best_idx, int) or best_idx < 0 or best_idx >= len(pool):
+                parse_warning = "judge: best_index missing or out of range"
+                best_idx = None
+        else:
+            best_idx, reasoning, confidence, needs_refine, issues, parse_warning = _parse_judge_response(
+                response_text,
+                len(pool),
+            )
         if best_idx is None:
             best_idx = 0
             if parse_warning:

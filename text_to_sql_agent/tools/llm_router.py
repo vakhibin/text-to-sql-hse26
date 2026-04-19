@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Iterable, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Sequence, TypeVar
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from text_to_sql_agent.config import settings
@@ -26,6 +27,7 @@ class ModelRole(StrEnum):
     GENERATOR_SECONDARY = "generator_secondary"
     QUERY_SKETCHER = "query_sketcher"
     REFINER = "refiner"
+    JUDGE = "judge"
 
 
 class LLMRouterError(Exception):
@@ -40,6 +42,41 @@ class LLMInvocationError(LLMRouterError):
     """Raised when invocation fails after retries."""
 
 
+T = TypeVar("T")
+
+
+def _is_gateway_timeout(exc: BaseException) -> bool:
+    if getattr(exc, "status_code", None) == 504:
+        return True
+    code = getattr(exc, "code", None)
+    if code in (504, "504"):
+        return True
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 504:
+        return True
+    lowered = str(exc).lower()
+    return (
+        ("504" in lowered and ("gateway" in lowered or "timeout" in lowered))
+        or "gateway timeout" in lowered
+    )
+
+
+async def _ainvoke_with_gateway_retry(coro_factory: Callable[[], Awaitable[T]]) -> T:
+    """Run async LLM call; on gateway timeout, sleep once and retry (single extra attempt)."""
+    last_exc: BaseException | None = None
+    for attempt in range(2):
+        try:
+            return await coro_factory()
+        except BaseException as exc:
+            last_exc = exc
+            if attempt == 0 and _is_gateway_timeout(exc):
+                await asyncio.sleep(float(settings.retry_wait_min_seconds))
+                continue
+            raise
+    assert last_exc is not None
+    raise last_exc
+
+
 @dataclass
 class LLMInvokeResult:
     """Normalized LLM response with usage metadata."""
@@ -47,6 +84,7 @@ class LLMInvokeResult:
     text: str
     usage: dict[str, Any]
     response_metadata: dict[str, Any]
+    structured: BaseModel | None = None
 
 
 class LLMRouter:
@@ -67,6 +105,8 @@ class LLMRouter:
             return settings.query_sketcher_model or settings.generator_model_primary
         if role == ModelRole.REFINER:
             return settings.refiner_model
+        if role == ModelRole.JUDGE:
+            return settings.judge_model
         raise LLMRouterError(f"Unknown role: {role}")
 
     def temperature_for_role(self, role: ModelRole) -> float:
@@ -75,8 +115,6 @@ class LLMRouter:
             return settings.llm_temperature_primary
         if role == ModelRole.GENERATOR_SECONDARY:
             return settings.llm_temperature_secondary
-        if role == ModelRole.QUERY_SKETCHER:
-            return settings.llm_temperature_refiner
         return settings.llm_temperature_refiner
 
     def max_tokens_for_role(self, role: ModelRole) -> int:
@@ -202,6 +240,7 @@ class LLMRouter:
         trace_id: str | None = None,
         db_id: str | None = None,
         stage: str | None = None,
+        structured_output: type[BaseModel] | None = None,
     ) -> LLMInvokeResult:
         """Invoke model for role and return normalized text plus usage metadata."""
         model_name = model_override or self.model_for_role(role)
@@ -220,7 +259,62 @@ class LLMRouter:
         )
         try:
             with generation_ctx:
-                response = await llm.ainvoke(messages)
+                if structured_output is not None:
+                    structured_llm = llm.with_structured_output(structured_output, include_raw=True)
+                    packed = await _ainvoke_with_gateway_retry(lambda: structured_llm.ainvoke(messages))
+                    if not isinstance(packed, dict):
+                        raise LLMInvocationError("structured_output: unexpected invoke payload")
+                    raw_response = packed.get("raw")
+                    parsed = packed.get("parsed")
+                    parsing_error = packed.get("parsing_error")
+                    structured_obj: BaseModel | None = None
+                    if isinstance(parsed, BaseModel):
+                        structured_obj = parsed
+                    elif isinstance(parsed, dict):
+                        try:
+                            structured_obj = structured_output.model_validate(parsed)
+                        except Exception:
+                            structured_obj = None
+                    if raw_response is None:
+                        raise LLMInvocationError("structured_output: missing raw response")
+                    normalized_text = self._normalize_text(raw_response.content)
+                    usage = self._extract_usage(
+                        response=raw_response,
+                        model_name=model_name,
+                        stage=stage_name,
+                    )
+                    if parsing_error is not None:
+                        update_langfuse_generation(
+                            generation,
+                            output=normalized_text,
+                            usage=usage,
+                            metadata={
+                                "db_id": db_id,
+                                "stage": stage_name,
+                                "role": role.value,
+                                "structured_parsing_error": str(parsing_error),
+                            },
+                        )
+                        return LLMInvokeResult(
+                            text=normalized_text,
+                            usage=usage.as_dict(),
+                            response_metadata=getattr(raw_response, "response_metadata", {}) or {},
+                            structured=None,
+                        )
+                    update_langfuse_generation(
+                        generation,
+                        output=normalized_text,
+                        usage=usage,
+                        metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
+                    )
+                    return LLMInvokeResult(
+                        text=normalized_text,
+                        usage=usage.as_dict(),
+                        response_metadata=getattr(raw_response, "response_metadata", {}) or {},
+                        structured=structured_obj,
+                    )
+
+                response = await _ainvoke_with_gateway_retry(lambda: llm.ainvoke(messages))
         except Exception as exc:  # pragma: no cover - runtime/network path
             update_langfuse_generation(
                 generation,
@@ -242,6 +336,7 @@ class LLMRouter:
             text=normalized_text,
             usage=usage.as_dict(),
             response_metadata=getattr(response, "response_metadata", {}) or {},
+            structured=None,
         )
 
     async def ainvoke(

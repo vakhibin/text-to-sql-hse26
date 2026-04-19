@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
@@ -24,6 +24,24 @@ def _to_sqlalchemy_url(db_path_or_url: str) -> str:
     return f"sqlite+aiosqlite:///{normalized}"
 
 
+def _apply_sqlite_text_factory(dbapi_connection: object) -> None:
+    """Attach forgiving UTF-8 decoding to the real sqlite3.Connection.
+
+    SQLAlchemy ``sqlite+aiosqlite`` passes ``AsyncAdapt_aiosqlite_connection`` into the
+    ``connect`` event, not a raw ``sqlite3.Connection``. The underlying DBAPI handle is
+    ``driver_connection._conn`` (``aiosqlite`` wraps ``sqlite3``).
+    """
+    decode = lambda b: b.decode("utf-8", errors="ignore")
+    driver = getattr(dbapi_connection, "driver_connection", None)
+    if driver is not None:
+        sqlite_conn = getattr(driver, "_conn", None)
+        if sqlite_conn is not None:
+            sqlite_conn.text_factory = decode
+            return
+    if hasattr(dbapi_connection, "text_factory"):
+        dbapi_connection.text_factory = decode
+
+
 async def execute_sql(
     db_path_or_url: str,
     sql: str,
@@ -32,6 +50,11 @@ async def execute_sql(
 ) -> SQLExecutionResult:
     """Execute one SQL statement via SQLAlchemy in isolated try/except."""
     engine = create_async_engine(_to_sqlalchemy_url(db_path_or_url), future=True)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _on_sqlite_connect(dbapi_connection: object, _connection_record: object) -> None:
+        _apply_sqlite_text_factory(dbapi_connection)
+
     try:
         async with engine.connect() as conn:
             result = await asyncio.wait_for(conn.execute(text(sql)), timeout=timeout_seconds)

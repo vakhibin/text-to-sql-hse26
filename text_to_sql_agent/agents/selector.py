@@ -8,6 +8,8 @@ import time
 from functools import lru_cache
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from text_to_sql_agent.config import settings
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.prompts.selector import build_selector_rerank_prompt
@@ -15,6 +17,13 @@ from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
 from text_to_sql_agent.tools.schema_loader import load_schema, schema_to_mschema
 from text_to_sql_agent.tools.schema_fk_bridge import expand_selected_tables_via_fk_graph
 from text_to_sql_agent.tools.vector_store import build_vector_store
+
+
+class SelectorRerankOutput(BaseModel):
+    """LLM reranker response shape (structured output)."""
+
+    selected_tables: list[str] = Field(default_factory=list)
+    reasoning: str = ""
 
 
 @lru_cache(maxsize=1)
@@ -284,12 +293,18 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
                 trace_id=state.get("trace_id"),
                 db_id=db_id,
                 stage="selector",
+                structured_output=SelectorRerankOutput,
             )
             response_text = response.text
             llm_usage.append(response.usage)
             total_cost_usd += float(response.usage.get("cost_usd", 0.0))
             _debug(f"reranker_raw_response={response_text!r}")
-            selected_tables = _safe_parse_selected_tables(response_text)
+            if response.structured is not None:
+                selected_tables = [
+                    str(name).strip() for name in response.structured.selected_tables if str(name).strip()
+                ]
+            else:
+                selected_tables = _safe_parse_selected_tables(response_text)
             _debug(f"parsed_selected_tables={selected_tables}")
             selected_tables = [name for name in selected_tables if name][: settings.selector_target_tables_max]
 

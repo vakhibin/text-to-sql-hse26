@@ -5,9 +5,14 @@ from __future__ import annotations
 import json
 import re
 import time
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 from text_to_sql_agent.config import settings
-from text_to_sql_agent.graph.state import ComplexityLevel, SQLAgentState
+from text_to_sql_agent.graph.state import SQLAgentState
+
+ComplexityLevel = Literal["simple", "moderate", "complex", "unknown"]
 from text_to_sql_agent.prompts.decomposer import build_decomposer_prompt
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
 
@@ -19,6 +24,21 @@ _DEFAULT_RISK_FLAGS = {
     "literal_filter_risk": False,
     "bag_semantics_risk": False,
 }
+
+
+class DecomposerRiskFlagsModel(BaseModel):
+    needs_join: bool = False
+    needs_aggregation: bool = False
+    projection_width: int = 1
+    literal_filter_risk: bool = False
+    bag_semantics_risk: bool = False
+
+
+class DecomposerOutput(BaseModel):
+    complexity: str = "unknown"
+    sub_questions: list[str] = Field(default_factory=list)
+    risk_flags: DecomposerRiskFlagsModel = Field(default_factory=DecomposerRiskFlagsModel)
+    reasoning: str = ""
 
 
 def _extract_json_blob(text: str) -> str:
@@ -132,12 +152,28 @@ async def run_decomposer(state: SQLAgentState) -> SQLAgentState:
             trace_id=state.get("trace_id"),
             db_id=state.get("db_id"),
             stage="decomposer",
+            structured_output=DecomposerOutput,
         )
         response_text = response.text
         llm_usage.append(response.usage)
         total_cost_usd += float(response.usage.get("cost_usd", 0.0))
 
-        complexity, sub_questions, risk_flags, reasoning, parse_warning = _parse_decomposition(response_text)
+        if response.structured is not None:
+            out = response.structured
+            raw_complexity = str(out.complexity or "unknown").lower().strip()
+            complexity: ComplexityLevel = (
+                raw_complexity if raw_complexity in _VALID_COMPLEXITIES else "unknown"  # type: ignore[assignment]
+            )
+            sub_questions = [str(item).strip() for item in out.sub_questions if str(item).strip()]
+            risk_flags = _normalize_risk_flags(out.risk_flags.model_dump())
+            reasoning = str(out.reasoning or "").strip()
+            parse_warning: str | None = None
+            if complexity == "complex" and not sub_questions:
+                parse_warning = "decomposer: complex classified but no sub_questions returned"
+            if complexity == "simple":
+                sub_questions = []
+        else:
+            complexity, sub_questions, risk_flags, reasoning, parse_warning = _parse_decomposition(response_text)
         if parse_warning:
             warnings.append(parse_warning)
 

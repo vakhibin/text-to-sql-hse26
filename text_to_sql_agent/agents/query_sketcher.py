@@ -410,11 +410,16 @@ async def run_query_sketcher(state: SQLAgentState) -> SQLAgentState:
             trace_id=state.get("trace_id"),
             db_id=state.get("db_id"),
             stage="sketcher",
+            structured_output=QuerySketchSchema,
         )
         llm_usage.append(response.usage)
         total_cost_usd += float(response.usage.get("cost_usd", 0.0))
 
-        sketch, sketch_text, parse_warning = _parse_query_sketch(response.text)
+        if response.structured is not None:
+            sketch, sketch_text = _normalize_query_sketch_payload(response.structured.model_dump())[:2]
+            parse_warning = None
+        else:
+            sketch, sketch_text, parse_warning = _parse_query_sketch(response.text)
         if parse_warning:
             warnings.append(parse_warning)
             try:

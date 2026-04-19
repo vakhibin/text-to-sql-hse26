@@ -23,6 +23,7 @@ class AgentSettings(BaseSettings):
     query_sketcher_model: str | None = None
     query_sketcher_enabled: bool = True
     refiner_model: str = "openai/gpt-4.1"
+    judge_model: str = Field(default="openai/gpt-4.1", alias="JUDGE_MODEL")
     embeddings_model: str = "openai/text-embedding-3-small"
 
     # Data and retrieval paths
