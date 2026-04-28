@@ -1,0 +1,109 @@
+x-common-env: &common-env
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+  GENERATOR_MODEL_PRIMARY: ${GENERATOR_MODEL_PRIMARY:-google/gemma-4-26b-a4b-it}
+  GENERATOR_MODEL_SECONDARY: ${GENERATOR_MODEL_SECONDARY:-qwen/qwen3.5-35b-a3b}
+  QUERY_SKETCHER_MODEL: ${QUERY_SKETCHER_MODEL:-google/gemini-2.5-pro}
+  REFINER_MODEL: ${REFINER_MODEL:-google/gemma-4-31b-it}
+  JUDGE_MODEL: ${JUDGE_MODEL:-openai/gpt-4.1}
+  EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:-openai/text-embedding-3-large}
+  LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
+
+services:
+  text-to-sql-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: text-to-sql-hse26:latest
+    command:
+      - uv
+      - run
+      - --no-sync
+      - uvicorn
+      - services.text_to_sql_api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    environment:
+      <<: *common-env
+      SPIDER_ROOT: /app/databases/spider
+      BIRD_ROOT: /app/databases/bird
+      BIRD_MINI_ROOT: /app/databases/bird_mini
+      CHROMA_PERSIST_DIRECTORY: /app/.cache/chroma
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./databases:/app/databases:ro
+      - ./.cache:/app/.cache
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  orchestrator-api:
+    image: text-to-sql-hse26:latest
+    command:
+      - uv
+      - run
+      - --no-sync
+      - uvicorn
+      - services.orchestrator_api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8002"
+    environment:
+      <<: *common-env
+      TEXT_TO_SQL_API_URL: http://text-to-sql-api:8001
+      TEXT_TO_SQL_API_TIMEOUT_S: "180"
+      ORCH_SQLITE_PATH: /app/.cache/orchestrator/sessions.sqlite
+      CHROMA_PERSIST_DIRECTORY: /app/.cache/chroma
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./.cache:/app/.cache
+    depends_on:
+      text-to-sql-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  ui:
+    image: text-to-sql-hse26:latest
+    command:
+      - uv
+      - run
+      - --no-sync
+      - streamlit
+      - run
+      - services/ui/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    environment:
+      ORCHESTRATOR_API_URL: http://orchestrator-api:8002
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./.cache:/app/.cache
+    depends_on:
+      orchestrator-api:
+        condition: service_healthy

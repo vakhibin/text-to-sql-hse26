@@ -112,4 +112,40 @@ curl http://localhost:8002/health
 uv run pytest tests/services -v
 ```
 
-Docker/compose packaging lands in Phase 10.
+## Run with Docker Compose
+
+Phase 10 adds a three-service compose stack:
+
+- `text-to-sql-api` on `http://localhost:8001`
+- `orchestrator-api` on `http://localhost:8002`
+- `ui` (Streamlit) on `http://localhost:8501`
+
+Prepare env and data:
+
+```bash
+cp .env.compose.example .env
+# edit OPENROUTER_API_KEY and model settings if needed
+# ensure Spider data exists under ./databases/spider
+```
+
+Start the stack:
+
+```bash
+docker compose up --build
+# or: make compose-up
+```
+
+Useful checks:
+
+```bash
+curl http://localhost:8001/health
+curl http://localhost:8002/health
+open http://localhost:8501
+```
+
+Stop:
+
+```bash
+docker compose down
+# or: make compose-down
+```
