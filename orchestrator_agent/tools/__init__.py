@@ -7,6 +7,7 @@ Tools are split by concern:
   search values, switch active database)
 - ``history``: SQL manipulation (fix, modify) and session history (list
   recent, rerun)
+- ``results``: summarize / export the latest result preview
 
 ``make_all_tools`` is the composition used at graph-build time. Individual
 ``make_*_tools`` factories stay exposed so tests can exercise a single tool
@@ -17,6 +18,7 @@ from orchestrator_agent.clients.text_to_sql import TextToSQLClient
 from orchestrator_agent.tools.core import make_core_tools
 from orchestrator_agent.tools.discovery import make_discovery_tools
 from orchestrator_agent.tools.history import make_history_tools
+from orchestrator_agent.tools.results import make_result_tools
 
 
 def make_all_tools(client: TextToSQLClient) -> list:
@@ -25,6 +27,7 @@ def make_all_tools(client: TextToSQLClient) -> list:
         *make_core_tools(client),
         *make_discovery_tools(client),
         *make_history_tools(client),
+        *make_result_tools(),
     ]
 
 
@@ -32,5 +35,6 @@ __all__ = [
     "make_core_tools",
     "make_discovery_tools",
     "make_history_tools",
+    "make_result_tools",
     "make_all_tools",
 ]

@@ -37,6 +37,7 @@ from orchestrator_agent.clients.text_to_sql import (
 )
 from orchestrator_agent.tools._shared import (
     ROW_PREVIEW_LIMIT,
+    clear_result_artifacts,
     format_rows_preview,
     resolve_db_id,
     tool_error,
@@ -193,8 +194,7 @@ def make_discovery_tools(client: TextToSQLClient) -> list:
             extra_updates={
                 "active_db_id": db_id,
                 "last_sql": None,
-                "last_rows_preview": None,
-                "last_rows_columns": None,
+                **clear_result_artifacts(),
             },
         )
 

@@ -1,4 +1,4 @@
-"""Shared helpers used across tool families (core, discovery, history, ...).
+"""Shared helpers used across tool families (core, discovery, history, results).
 
 Kept private to the ``orchestrator_agent.tools`` package — nothing outside
 should import from here. The helpers handle three concerns every tool cares
@@ -12,6 +12,9 @@ about:
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 from typing import Any
 
 from langchain_core.messages import ToolMessage
@@ -19,6 +22,20 @@ from langgraph.types import Command
 
 ROW_PREVIEW_LIMIT = 10
 SQL_HISTORY_CAP = 20
+
+
+def clear_result_artifacts() -> dict[str, Any]:
+    """Return state updates that invalidate the current row result.
+
+    SQL-producing tools that do not execute should call this so a later
+    ``export_results`` cannot accidentally export rows from an older query.
+    """
+    return {
+        "last_rows_preview": None,
+        "last_rows_columns": None,
+        "last_row_count": None,
+        "last_result_export": None,
+    }
 
 
 def append_history(
@@ -81,6 +98,64 @@ def format_rows_preview(
     )
     truncated = "" if len(rows) <= limit else f"\n... ({len(rows) - limit} more rows)"
     return (f"{header}\n{body}" if header else body) + truncated
+
+
+def format_markdown_table(
+    columns: list[str] | None,
+    rows: list[list[Any]] | None,
+    *,
+    limit: int | None = None,
+) -> str:
+    """Render rows as a compact Markdown table."""
+    if not rows:
+        return "(no rows)"
+    preview = rows if limit is None else rows[:limit]
+    col_count = len(columns or []) or max((len(row) for row in preview), default=0)
+    header = list(columns or [f"col_{i + 1}" for i in range(col_count)])
+
+    def cell(value: Any) -> str:
+        text = "" if value is None else str(value)
+        return text.replace("|", "\\|").replace("\n", " ")
+
+    lines = [
+        "| " + " | ".join(cell(c) for c in header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
+    ]
+    for row in preview:
+        padded = list(row) + [""] * max(0, len(header) - len(row))
+        lines.append("| " + " | ".join(cell(v) for v in padded[: len(header)]) + " |")
+    if limit is not None and len(rows) > limit:
+        lines.append(f"\n... ({len(rows) - limit} more rows in preview)")
+    return "\n".join(lines)
+
+
+def format_csv(
+    columns: list[str] | None,
+    rows: list[list[Any]] | None,
+) -> str:
+    """Render rows as CSV text."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    if columns:
+        writer.writerow(columns)
+    for row in rows or []:
+        writer.writerow(["" if value is None else value for value in row])
+    return output.getvalue().strip()
+
+
+def format_json_rows(
+    columns: list[str] | None,
+    rows: list[list[Any]] | None,
+) -> str:
+    """Render rows as JSON records when columns are known, otherwise arrays."""
+    if columns:
+        data = [
+            {columns[i]: row[i] if i < len(row) else None for i in range(len(columns))}
+            for row in (rows or [])
+        ]
+    else:
+        data = rows or []
+    return json.dumps(data, ensure_ascii=False, indent=2)
 
 
 def tool_error(tool_call_id: str, name: str, message: str) -> Command:

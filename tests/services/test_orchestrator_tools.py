@@ -155,6 +155,7 @@ async def test_run_text_to_sql_happy_path_updates_state() -> None:
     assert state["last_sql"] == "SELECT COUNT(*) FROM t"
     assert state["last_rows_preview"] == [[42]]
     assert state["last_rows_columns"] == ["cnt"]
+    assert state["last_row_count"] == 1
     tm = _last_tool_message(state)
     assert tm.name == "run_text_to_sql"
     assert "42" in tm.content
@@ -257,6 +258,7 @@ async def test_execute_sql_happy_path_sets_last_sql_and_preview() -> None:
     assert state["last_sql"] == "SELECT 1"
     assert state["active_db_id"] == "toy"
     assert state["last_rows_preview"] == [[1]]
+    assert state["last_row_count"] == 1
     tm = _last_tool_message(state)
     assert "Rows: 1" in tm.content
 
@@ -291,6 +293,8 @@ async def test_execute_sql_guardrail_violation_is_reported_to_llm() -> None:
     tm = _last_tool_message(state)
     assert "READ_ONLY_VIOLATION" in tm.content
     assert state["last_sql"] == "UPDATE t SET x = 1"
+    assert state.get("last_rows_preview") is None
+    assert state.get("last_row_count") is None
 
 
 @pytest.mark.asyncio

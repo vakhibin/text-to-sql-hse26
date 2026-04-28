@@ -37,6 +37,7 @@ from orchestrator_agent.clients.text_to_sql import (
 from orchestrator_agent.tools._shared import (
     ROW_PREVIEW_LIMIT,
     append_history,
+    clear_result_artifacts,
     format_rows_preview,
     resolve_db_id,
     tool_error,
@@ -134,6 +135,7 @@ def make_history_tools(client: TextToSQLClient) -> list:
                 "last_sql": resp.refined_sql,
                 "active_db_id": resolved,
                 "sql_history": history,
+                **clear_result_artifacts(),
             },
         )
 
@@ -207,6 +209,7 @@ def make_history_tools(client: TextToSQLClient) -> list:
                 "last_sql": resp.modified_sql,
                 "active_db_id": resolved,
                 "sql_history": history,
+                **clear_result_artifacts(),
             },
         )
 
@@ -324,6 +327,10 @@ def make_history_tools(client: TextToSQLClient) -> list:
             if resp.rows is not None:
                 update["last_rows_preview"] = resp.rows[:ROW_PREVIEW_LIMIT]
                 update["last_rows_columns"] = resp.columns
+                update["last_row_count"] = resp.row_count
+                update["last_result_export"] = None
+            else:
+                update.update(clear_result_artifacts())
             return tool_message(tool_call_id, "rerun", summary, extra_updates=update)
 
         code = resp.error_code or "ERROR"

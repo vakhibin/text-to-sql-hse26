@@ -33,6 +33,7 @@ from orchestrator_agent.clients.text_to_sql import (
 from orchestrator_agent.tools._shared import (
     ROW_PREVIEW_LIMIT as _ROW_PREVIEW_LIMIT,
     append_history as _append_history,
+    clear_result_artifacts as _clear_result_artifacts,
     format_rows_preview as _format_rows_preview,
     resolve_db_id as _resolve_db_id,
     tool_error as _tool_error,
@@ -136,6 +137,10 @@ def make_core_tools(client: TextToSQLClient) -> list:
         if resp.rows is not None:
             update["last_rows_preview"] = resp.rows[:_ROW_PREVIEW_LIMIT]
             update["last_rows_columns"] = resp.columns
+            update["last_row_count"] = resp.row_count
+            update["last_result_export"] = None
+        else:
+            update.update(_clear_result_artifacts())
         return Command(update=update)
 
     @tool
@@ -189,6 +194,10 @@ def make_core_tools(client: TextToSQLClient) -> list:
         if resp.success and resp.rows is not None:
             update["last_rows_preview"] = resp.rows[:_ROW_PREVIEW_LIMIT]
             update["last_rows_columns"] = resp.columns
+            update["last_row_count"] = resp.row_count
+            update["last_result_export"] = None
+        else:
+            update.update(_clear_result_artifacts())
         return Command(update=update)
 
     @tool

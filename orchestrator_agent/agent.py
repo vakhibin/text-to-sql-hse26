@@ -38,7 +38,9 @@ _SYSTEM_PROMPT_HEADER = (
     "- fix a broken or wrong SQL (use for error repair),\n"
     "- modify a SQL by a natural-language instruction "
     "(use for user-driven edits like \"add a WHERE clause for 2023\"),\n"
-    "- list the recent SQL queries in this session, and re-run one by index.\n\n"
+    "- list the recent SQL queries in this session, and re-run one by index,\n"
+    "- summarize or export the latest query result preview as Markdown, CSV, "
+    "or JSON.\n\n"
     "Rules:\n"
     "- Prefer calling tools over guessing. If the user asks anything that "
     "requires data, call a tool.\n"
@@ -63,6 +65,14 @@ def _build_context_suffix(state: OrchestratorState) -> str:
         bits.append(f"Active database: {active_db}")
     if last_sql:
         bits.append(f"Last SQL:\n{last_sql}")
+    if state.get("last_rows_preview") is not None:
+        row_count = state.get("last_row_count")
+        columns = state.get("last_rows_columns") or []
+        row_text = "unknown rows" if row_count is None else f"{row_count} rows"
+        bits.append(
+            "Latest result available: "
+            f"{row_text}; columns: {', '.join(columns) if columns else '(unknown)'}"
+        )
     if not bits:
         return ""
     return "\n\nSession context:\n" + "\n\n".join(bits)

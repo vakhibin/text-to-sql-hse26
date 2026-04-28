@@ -57,6 +57,11 @@ tools, or tests without pulling in FastAPI.
     - `rerun(index=1)` — re-execute a past query by 1-based history index;
       uses the db_id stored on the entry. Falls back to `last_sql` when
       history is empty.
+  - Result UX (Phase 7):
+    - `summarize_results(limit=5)` — summarize the latest row preview stored
+      in session state (zero network / LLM calls)
+    - `export_results(format=markdown|csv|json)` — export the latest stored
+      preview and save it as `last_result_export`
 
   Each tool that touches SQL appends an entry to `sql_history` (capped at
   20) so `list_recent` and `rerun` stay consistent across turns.

@@ -126,11 +126,16 @@ async def test_fix_sql_happy_path_updates_last_sql_and_history() -> None:
             "messages": [HumanMessage(content="please fix")],
             "active_db_id": "toy",
             "last_sql": "SELECT COUNT( FROM t",
+            "last_rows_preview": [[1]],
+            "last_rows_columns": ["old"],
+            "last_row_count": 1,
         },
         session_id="s_fix_ok",
     )
 
     assert state["last_sql"] == "SELECT COUNT(*) FROM t"
+    assert state.get("last_rows_preview") is None
+    assert state.get("last_row_count") is None
     history = state.get("sql_history") or []
     assert len(history) == 1
     assert history[0]["source"] == "fix"
@@ -239,6 +244,8 @@ async def test_modify_sql_happy_path_updates_last_sql() -> None:
     )
 
     assert state["last_sql"] == "SELECT * FROM t WHERE year = 2023"
+    assert state.get("last_rows_preview") is None
+    assert state.get("last_row_count") is None
     history = state.get("sql_history") or []
     assert history[-1]["source"] == "modify"
     assert history[-1]["executed"] is False
@@ -414,6 +421,7 @@ async def test_rerun_default_reexecutes_most_recent_history_entry() -> None:
     assert seen_sql == ["SELECT COUNT(*) FROM t"]
     assert state["last_sql"] == "SELECT COUNT(*) FROM t"
     assert state.get("last_rows_preview") == [[42]]
+    assert state.get("last_row_count") == 1
     new_history = state.get("sql_history") or []
     assert new_history[-1]["source"] == "rerun"
 

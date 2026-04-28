@@ -246,6 +246,8 @@ async def test_switch_database_updates_state_and_clears_last_sql() -> None:
             "last_sql": "SELECT 1",
             "last_rows_preview": [[1]],
             "last_rows_columns": ["x"],
+            "last_row_count": 1,
+            "last_result_export": "x\n1",
         },
         session_id="s_switch_ok",
     )
@@ -254,6 +256,8 @@ async def test_switch_database_updates_state_and_clears_last_sql() -> None:
     assert state.get("last_sql") is None
     assert state.get("last_rows_preview") is None
     assert state.get("last_rows_columns") is None
+    assert state.get("last_row_count") is None
+    assert state.get("last_result_export") is None
     tm = _last_tool_message(state)
     assert "Active database is now 'toy'" in tm.content
     assert "users" in tm.content and "orders" in tm.content

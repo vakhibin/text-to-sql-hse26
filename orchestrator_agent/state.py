@@ -9,10 +9,9 @@ Design notes:
   invocation appends new messages rather than overwriting them.
 - ``session_id`` / ``user_id`` are replicated into state so agent nodes
   and tool nodes can read them without fishing through ``config``.
-- ``active_db_id``, ``last_sql`` and ``last_rows_preview`` are the
-  "conversation artifacts" that tools populate and subsequent turns
-  consume. They are intentionally scalar and small so the checkpointer
-  persists them cheaply.
+- ``active_db_id``, ``last_sql`` and the ``last_*`` result fields are the
+  "conversation artifacts" that tools populate and subsequent turns consume.
+  They are intentionally small so the checkpointer persists them cheaply.
 - ``sql_history`` is an append-only, capped list of executed / produced SQL
   entries. Tools replace the whole list on update (there is no reducer) —
   each tool reads the current list from injected state, appends, and caps
@@ -38,6 +37,8 @@ class OrchestratorState(TypedDict, total=False):
     last_sql: Optional[str]
     last_rows_preview: Optional[list[list[Any]]]
     last_rows_columns: Optional[list[str]]
+    last_row_count: Optional[int]
+    last_result_export: Optional[str]
 
     sql_history: list[dict[str, Any]]
 
