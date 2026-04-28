@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from services.text_to_sql_api import pipeline_adapter as pipeline
 from services.text_to_sql_api.schemas import (
+    ExecuteConfirmedRequest,
     ExecuteRequest,
     ExecuteResponse,
     ExplainRequest,
@@ -88,6 +89,48 @@ async def execute(req: ExecuteRequest) -> ExecuteResponse:
         db_id=req.db_id,
         sql=req.sql,
         success=False,
+        error=error_msg,
+        error_code=_classify_exec_error(error_msg),  # type: ignore[arg-type]
+        elapsed_s=elapsed,
+    )
+
+
+@router.post("/execute-confirmed", response_model=ExecuteResponse)
+async def execute_confirmed(req: ExecuteConfirmedRequest) -> ExecuteResponse:
+    """Execute SQL after explicit user confirmation.
+
+    This endpoint is intentionally separate from ``/execute`` so the default
+    agent/tool path remains read-only. The request schema requires the literal
+    confirmation marker ``USER_CONFIRMED_WRITE``.
+    """
+    started = time.perf_counter()
+    result, _ = await pipeline.execute_sql_user_confirmed(
+        sql=req.sql,
+        db_id=req.db_id,
+        schema_root=req.schema_root,
+        timeout_seconds=req.timeout_seconds,
+    )
+    elapsed = round(time.perf_counter() - started, 4)
+
+    if result.success:
+        rows = _serialize_rows(result.rows)
+        return ExecuteResponse(
+            db_id=req.db_id,
+            sql=req.sql,
+            success=True,
+            read_only=False,
+            rows=rows,
+            columns=result.columns,
+            row_count=len(rows) if rows is not None else 0,
+            elapsed_s=elapsed,
+        )
+
+    error_msg = result.error or "unknown error"
+    return ExecuteResponse(
+        db_id=req.db_id,
+        sql=req.sql,
+        success=False,
+        read_only=False,
         error=error_msg,
         error_code=_classify_exec_error(error_msg),  # type: ignore[arg-type]
         elapsed_s=elapsed,

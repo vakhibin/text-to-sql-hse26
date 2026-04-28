@@ -40,7 +40,9 @@ _SYSTEM_PROMPT_HEADER = (
     "(use for user-driven edits like \"add a WHERE clause for 2023\"),\n"
     "- list the recent SQL queries in this session, and re-run one by index,\n"
     "- summarize or export the latest query result preview as Markdown, CSV, "
-    "or JSON.\n\n"
+    "or JSON,\n"
+    "- propose write SQL for explicit user confirmation, then execute it only "
+    "after the user clearly confirms.\n\n"
     "Rules:\n"
     "- Prefer calling tools over guessing. If the user asks anything that "
     "requires data, call a tool.\n"
@@ -48,8 +50,9 @@ _SYSTEM_PROMPT_HEADER = (
     "pick one that clearly matches the user's intent (then call "
     "switch_database) or ask the user to choose.\n"
     "- Write queries (INSERT/UPDATE/DELETE/DDL) are NOT executed automatically. "
-    "If the user asks for one, reply that you can produce it but the user must "
-    "explicitly confirm before it runs.\n"
+    "If the user asks for one, call propose_write_sql and ask for explicit "
+    "confirmation. Only call confirm_write_sql after a clear yes/confirm from "
+    "the user. If they decline, call cancel_pending_confirmation.\n"
     "- Keep answers concise and grounded in the tool output. If a tool fails, "
     "summarise the error and suggest a next step.\n"
     "- Never invent column or table names: rely on tool responses."
@@ -72,6 +75,13 @@ def _build_context_suffix(state: OrchestratorState) -> str:
         bits.append(
             "Latest result available: "
             f"{row_text}; columns: {', '.join(columns) if columns else '(unknown)'}"
+        )
+    pending = state.get("pending_confirmation")
+    if pending:
+        bits.append(
+            "Pending confirmation: "
+            f"{pending.get('type')} on db={pending.get('db_id')}\n"
+            f"SQL:\n{pending.get('sql')}"
         )
     if not bits:
         return ""

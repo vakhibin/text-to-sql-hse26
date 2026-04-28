@@ -124,6 +124,26 @@ class TextToSQLClient:
         data = await self._post("/execute", {k: v for k, v in payload.items() if v is not None})
         return ExecuteResponse.model_validate(data)
 
+    async def execute_confirmed(
+        self,
+        *,
+        sql: str,
+        db_id: str,
+        schema_root: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> ExecuteResponse:
+        payload = {
+            "sql": sql,
+            "db_id": db_id,
+            "schema_root": schema_root,
+            "timeout_seconds": timeout_seconds,
+            "confirmation": "USER_CONFIRMED_WRITE",
+        }
+        data = await self._post(
+            "/execute-confirmed", {k: v for k, v in payload.items() if v is not None}
+        )
+        return ExecuteResponse.model_validate(data)
+
     async def refine(
         self,
         *,

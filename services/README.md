@@ -62,6 +62,12 @@ tools, or tests without pulling in FastAPI.
       in session state (zero network / LLM calls)
     - `export_results(format=markdown|csv|json)` — export the latest stored
       preview and save it as `last_result_export`
+  - Write SQL guardrails (Phase 9):
+    - `propose_write_sql(sql, db_id?, rationale?)` — store write/DDL SQL in
+      `pending_confirmation` without executing it
+    - `confirm_write_sql()` — execute the pending write only after explicit
+      user confirmation via `/execute-confirmed`
+    - `cancel_pending_confirmation()` — discard the pending write request
 
   Each tool that touches SQL appends an entry to `sql_history` (capped at
   20) so `list_recent` and `rerun` stay consistent across turns.
@@ -73,6 +79,12 @@ tools, or tests without pulling in FastAPI.
   - `TEXT_TO_SQL_API_TIMEOUT_S` — per-request timeout (default `120`)
   - `ORCHESTRATOR_MAX_TOOL_STEPS` — max tool-calling iterations per turn (default `6`)
 - `ui/` — Streamlit chat interface that talks to `orchestrator_api`.
+  Phase 8+ UI features:
+  - API URL, session id, user id, and active db controls in the sidebar
+  - chat loop over `POST /chat`
+  - reload/reset session controls over `/sessions/{id}`
+  - display of `last_sql`, latest result metadata, `last_result_export`,
+    pending write confirmations, and recent SQL history from the session snapshot
 
 ## Run locally (dev)
 

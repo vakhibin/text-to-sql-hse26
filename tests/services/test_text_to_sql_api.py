@@ -120,6 +120,51 @@ async def test_execute_write_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_execute_confirmed_write_requires_marker(
+    api_client: httpx.AsyncClient, fake_schema_root: str
+) -> None:
+    resp = await api_client.post(
+        "/execute-confirmed",
+        json={
+            "sql": "DELETE FROM students WHERE id = 3",
+            "db_id": "toy",
+            "schema_root": fake_schema_root,
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_execute_confirmed_write_mutates_database(
+    api_client: httpx.AsyncClient, fake_schema_root: str
+) -> None:
+    resp = await api_client.post(
+        "/execute-confirmed",
+        json={
+            "sql": "DELETE FROM students WHERE id = 3",
+            "db_id": "toy",
+            "schema_root": fake_schema_root,
+            "confirmation": "USER_CONFIRMED_WRITE",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["read_only"] is False
+
+    check = await api_client.post(
+        "/execute",
+        json={
+            "sql": "SELECT COUNT(*) FROM students",
+            "db_id": "toy",
+            "schema_root": fake_schema_root,
+        },
+    )
+    assert check.status_code == 200
+    assert check.json()["rows"] == [[2]]
+
+
+@pytest.mark.asyncio
 async def test_execute_unknown_db(api_client: httpx.AsyncClient, fake_schema_root: str) -> None:
     resp = await api_client.post(
         "/execute",

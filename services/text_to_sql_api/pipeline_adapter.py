@@ -120,6 +120,38 @@ async def execute_sql_read_only(
     return result, str(db_path)
 
 
+async def execute_sql_user_confirmed(
+    *,
+    sql: str,
+    db_id: str,
+    schema_root: str | None = None,
+    timeout_seconds: int | None = None,
+) -> tuple[SQLExecutionResult, str | None]:
+    """Execute ``sql`` after an upstream user-confirmation flow.
+
+    This bypasses the read-only guardrail but keeps all execution inside the
+    same timeout/error envelope. Only call from explicit confirmation paths.
+    """
+    root = _resolve_schema_root(schema_root)
+    db_path = _resolve_db_path(db_id, root)
+    if db_path is None:
+        return (
+            SQLExecutionResult(
+                success=False,
+                rows=None,
+                error=f"database file for db_id={db_id!r} not found under {root!r}",
+            ),
+            None,
+        )
+    result = await execute_sql(
+        str(db_path),
+        sql,
+        timeout_seconds=timeout_seconds or settings.execution_timeout_seconds,
+        allow_write=True,
+    )
+    return result, str(db_path)
+
+
 # ---- /refine ------------------------------------------------------------
 
 

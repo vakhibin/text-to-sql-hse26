@@ -60,6 +60,13 @@ class ExecuteRequest(BaseModel):
     timeout_seconds: Optional[int] = Field(default=None, ge=1, le=120)
 
 
+class ExecuteConfirmedRequest(ExecuteRequest):
+    confirmation: Literal["USER_CONFIRMED_WRITE"] = Field(
+        ...,
+        description="Explicit marker required for user-confirmed write execution.",
+    )
+
+
 ExecuteErrorCode = Literal["READ_ONLY_VIOLATION", "DB_ERROR", "TIMEOUT", "UNKNOWN"]
 
 
@@ -67,7 +74,7 @@ class ExecuteResponse(BaseModel):
     db_id: str
     sql: str
     success: bool
-    read_only: Literal[True] = True
+    read_only: bool = True
     rows: Optional[list[list[Any]]] = None
     columns: Optional[list[str]] = None
     row_count: Optional[int] = None

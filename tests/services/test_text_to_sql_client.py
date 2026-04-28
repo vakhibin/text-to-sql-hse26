@@ -152,6 +152,42 @@ async def test_execute_success_and_error_bodies() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_confirmed_sends_confirmation_marker() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["path"] = request.url.path
+        captured["json"] = json.loads(request.content)
+        return _json_response(
+            {
+                "db_id": "toy",
+                "sql": captured["json"]["sql"],
+                "success": True,
+                "read_only": False,
+                "rows": [],
+                "columns": None,
+                "row_count": 0,
+                "elapsed_s": 0.01,
+            }
+        )
+
+    client = _make_client(handler)
+    try:
+        resp = await client.execute_confirmed(
+            sql="DELETE FROM students WHERE id = 3", db_id="toy"
+        )
+    finally:
+        await client.aclose()
+
+    assert captured["path"] == "/execute-confirmed"
+    assert captured["json"]["confirmation"] == "USER_CONFIRMED_WRITE"
+    assert resp.success is True
+    assert resp.read_only is False
+
+
+@pytest.mark.asyncio
 async def test_explain_roundtrip() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/explain"

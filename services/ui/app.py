@@ -153,6 +153,15 @@ def _render_artifacts() -> None:
         with st.expander("Last Result Export", expanded=False):
             st.code(str(extra["last_result_export"]))
 
+    pending = extra.get("pending_confirmation")
+    if pending:
+        st.warning("Write SQL is waiting for explicit confirmation.")
+        with st.expander("Pending Write SQL", expanded=True):
+            st.caption(f"Database: `{pending.get('db_id') or '-'}`")
+            st.code(str(pending.get("sql") or ""), language="sql")
+            if pending.get("rationale"):
+                st.caption(str(pending["rationale"]))
+
     row_count = extra.get("last_row_count")
     columns = extra.get("last_rows_columns")
     if row_count is not None or columns:
