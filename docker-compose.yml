@@ -100,6 +100,7 @@ services:
       - --server.headless=true
     environment:
       ORCHESTRATOR_API_URL: http://orchestrator-api:8002
+      ORCHESTRATOR_UI_TIMEOUT_S: ${ORCHESTRATOR_UI_TIMEOUT_S:-300}
     ports:
       - "8501:8501"
     volumes:

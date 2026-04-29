@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 DEFAULT_ORCHESTRATOR_URL = "http://localhost:8002"
+DEFAULT_UI_TIMEOUT_S = 300.0
 
 
 class OrchestratorUIError(RuntimeError):
@@ -63,7 +64,7 @@ class OrchestratorUIClient:
         self,
         base_url: str | None = None,
         *,
-        timeout_s: float = 120.0,
+        timeout_s: float = DEFAULT_UI_TIMEOUT_S,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.base_url = normalize_base_url(base_url)

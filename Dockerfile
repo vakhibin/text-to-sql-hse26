@@ -6,6 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    PYTHONPATH="/app" \
     PATH="/app/.venv/bin:${PATH}"
 
 COPY pyproject.toml uv.lock README.md ./

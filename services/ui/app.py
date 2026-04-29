@@ -9,6 +9,7 @@ import streamlit as st
 
 from services.ui.client import (
     DEFAULT_ORCHESTRATOR_URL,
+    DEFAULT_UI_TIMEOUT_S,
     OrchestratorUIClient,
     OrchestratorUIError,
     format_history_label,
@@ -26,13 +27,21 @@ def _init_state() -> None:
         os.getenv("ORCHESTRATOR_API_URL", DEFAULT_ORCHESTRATOR_URL),
     )
     st.session_state.setdefault("active_db_id", "")
+    st.session_state.setdefault("active_db_id_input", st.session_state.active_db_id)
+    st.session_state.setdefault(
+        "orchestrator_timeout_s",
+        float(os.getenv("ORCHESTRATOR_UI_TIMEOUT_S", DEFAULT_UI_TIMEOUT_S)),
+    )
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("last_session", None)
     st.session_state.setdefault("last_error", None)
 
 
 def _client() -> OrchestratorUIClient:
-    return OrchestratorUIClient(normalize_base_url(st.session_state.orchestrator_url))
+    return OrchestratorUIClient(
+        normalize_base_url(st.session_state.orchestrator_url),
+        timeout_s=float(st.session_state.orchestrator_timeout_s),
+    )
 
 
 def _load_session() -> None:
@@ -64,7 +73,11 @@ def _send_message(prompt: str) -> None:
             session_id=st.session_state.session_id,
             user_id=st.session_state.user_id,
             message=prompt,
-            active_db_id=st.session_state.active_db_id.strip() or None,
+            active_db_id=(
+                st.session_state.active_db_id_input.strip()
+                or st.session_state.active_db_id.strip()
+                or None
+            ),
         )
     except OrchestratorUIError as exc:
         st.session_state.last_error = str(exc)
@@ -76,7 +89,8 @@ def _send_message(prompt: str) -> None:
         client.close()
 
     st.session_state.last_error = None
-    st.session_state.active_db_id = response.get("active_db_id") or st.session_state.active_db_id
+    if response.get("active_db_id"):
+        st.session_state.active_db_id = response["active_db_id"]
     st.session_state.messages.extend(visible_messages(response.get("messages_delta") or [])[1:])
     _load_session()
 
@@ -97,6 +111,14 @@ def _render_sidebar() -> None:
     with st.sidebar:
         st.header("Connection")
         st.text_input("Orchestrator API URL", key="orchestrator_url")
+        st.number_input(
+            "Request timeout (s)",
+            key="orchestrator_timeout_s",
+            min_value=30.0,
+            max_value=600.0,
+            step=30.0,
+            help="Full text-to-SQL runs may take 1-3 minutes on first request.",
+        )
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -118,10 +140,12 @@ def _render_sidebar() -> None:
         st.text_input("Session ID", key="session_id")
         st.text_input("User ID", key="user_id")
         st.text_input(
-            "Active DB ID",
-            key="active_db_id",
+            "Active DB ID override",
+            key="active_db_id_input",
             help="Optional. The agent can also choose/switch DBs using tools.",
         )
+        if st.session_state.active_db_id_input.strip():
+            st.session_state.active_db_id = st.session_state.active_db_id_input.strip()
         if st.button("Reset session", type="secondary", use_container_width=True):
             _reset_session()
             st.rerun()
@@ -194,7 +218,9 @@ def main() -> None:
         "Ask a question, modify the last SQL, export results, or inspect a database..."
     )
     if prompt:
-        with st.spinner("Agent is thinking..."):
+        with st.spinner(
+            "Running agent pipeline... first text-to-SQL request can take 1-3 minutes."
+        ):
             _send_message(prompt)
         st.rerun()
 

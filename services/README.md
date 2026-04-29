@@ -143,6 +143,12 @@ curl http://localhost:8002/health
 open http://localhost:8501
 ```
 
+End-to-end smoke through the orchestrator agent:
+
+```bash
+uv run python scripts/run_orchestrator_smoke.py
+```
+
 Stop:
 
 ```bash
