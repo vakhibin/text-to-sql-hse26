@@ -38,6 +38,7 @@ async def get_session(session_id: str, request: Request) -> HistoryResponse:
         last_sql=values.get("last_sql"),
         extra={
             "user_id": values.get("user_id"),
+            "last_rows_preview": values.get("last_rows_preview"),
             "last_rows_columns": values.get("last_rows_columns"),
             "last_row_count": values.get("last_row_count"),
             "last_result_export": values.get("last_result_export"),

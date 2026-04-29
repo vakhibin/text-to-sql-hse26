@@ -40,11 +40,36 @@ def visible_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     return visible
 
 
+def session_extra(session: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the ``extra`` artifact payload from a session response."""
+    extra = (session or {}).get("extra") or {}
+    return extra if isinstance(extra, dict) else {}
+
+
 def sql_history_from_session(session: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Extract newest-first SQL history from a session response."""
-    extra = (session or {}).get("extra") or {}
-    history = list(extra.get("sql_history") or [])
+    history = list(session_extra(session).get("sql_history") or [])
     return list(reversed(history))
+
+
+def latest_result_from_session(session: dict[str, Any] | None) -> dict[str, Any]:
+    """Return normalized latest result metadata and preview rows."""
+    extra = session_extra(session)
+    columns = [str(col) for col in (extra.get("last_rows_columns") or [])]
+    raw_rows = list(extra.get("last_rows_preview") or [])
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        if isinstance(raw, dict):
+            rows.append(raw)
+            continue
+        values = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+        row_columns = columns or [f"col_{i + 1}" for i in range(len(values))]
+        rows.append(dict(zip(row_columns, values)))
+    return {
+        "row_count": extra.get("last_row_count"),
+        "columns": columns,
+        "rows": rows,
+    }
 
 
 def format_history_label(index: int, entry: dict[str, Any]) -> str:

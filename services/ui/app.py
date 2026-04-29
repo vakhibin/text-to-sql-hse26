@@ -1,4 +1,4 @@
-"""Streamlit chat UI for the conversational text-to-SQL agent."""
+"""Streamlit DBeaver-light UI for the conversational text-to-SQL agent."""
 
 from __future__ import annotations
 
@@ -13,7 +13,9 @@ from services.ui.client import (
     OrchestratorUIClient,
     OrchestratorUIError,
     format_history_label,
+    latest_result_from_session,
     normalize_base_url,
+    session_extra,
     sql_history_from_session,
     visible_messages,
 )
@@ -33,6 +35,8 @@ def _init_state() -> None:
         float(os.getenv("ORCHESTRATOR_UI_TIMEOUT_S", DEFAULT_UI_TIMEOUT_S)),
     )
     st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("question_prompt", "")
+    st.session_state.setdefault("followup_prompt", "")
     st.session_state.setdefault("last_session", None)
     st.session_state.setdefault("last_error", None)
 
@@ -65,7 +69,15 @@ def _load_session() -> None:
         st.session_state.active_db_id = active_db
 
 
-def _send_message(prompt: str) -> None:
+def _active_db_param() -> str | None:
+    return (
+        st.session_state.active_db_id_input.strip()
+        or st.session_state.active_db_id.strip()
+        or None
+    )
+
+
+def _send_message(prompt: str) -> bool:
     st.session_state.messages.append({"role": "human", "content": prompt})
     client = _client()
     try:
@@ -73,26 +85,25 @@ def _send_message(prompt: str) -> None:
             session_id=st.session_state.session_id,
             user_id=st.session_state.user_id,
             message=prompt,
-            active_db_id=(
-                st.session_state.active_db_id_input.strip()
-                or st.session_state.active_db_id.strip()
-                or None
-            ),
+            active_db_id=_active_db_param(),
         )
     except OrchestratorUIError as exc:
         st.session_state.last_error = str(exc)
         st.session_state.messages.append(
             {"role": "ai", "content": f"Request failed: {exc}"}
         )
-        return
+        return False
     finally:
         client.close()
 
     st.session_state.last_error = None
     if response.get("active_db_id"):
         st.session_state.active_db_id = response["active_db_id"]
-    st.session_state.messages.extend(visible_messages(response.get("messages_delta") or [])[1:])
+    st.session_state.messages.extend(
+        visible_messages(response.get("messages_delta") or [])[1:]
+    )
     _load_session()
+    return True
 
 
 def _reset_session() -> None:
@@ -163,21 +174,97 @@ def _render_sidebar() -> None:
                     st.caption(format_history_label(i, entry))
 
 
-def _render_artifacts() -> None:
-    session = st.session_state.last_session
-    if not session:
+def _run_prompt(prompt: str, *, label: str | None = None) -> None:
+    prompt = prompt.strip()
+    if not prompt:
+        st.warning("Enter a request first.")
         return
-    extra = session.get("extra") or {}
-    last_sql = session.get("last_sql")
+    with st.spinner(label or "Running agent pipeline..."):
+        _send_message(prompt)
+    st.rerun()
+
+
+def _render_query_workspace() -> None:
+    session = st.session_state.last_session
+    active_db = (
+        st.session_state.active_db_id_input.strip()
+        or st.session_state.active_db_id.strip()
+        or (session or {}).get("active_db_id")
+        or "-"
+    )
+    st.subheader("Ask Database")
+    st.caption(f"Active DB: `{active_db}`")
+
+    with st.form("question_form"):
+        question = st.text_area(
+            "Natural-language question",
+            key="question_prompt",
+            height=110,
+            placeholder="Example: Show the top 5 singers by number of concerts.",
+        )
+        submitted = st.form_submit_button("Run Text-to-SQL", type="primary")
+    if submitted:
+        _run_prompt(
+            question,
+            label="Running text-to-SQL pipeline... first request can take 1-3 minutes.",
+        )
+
+    with st.form("followup_form"):
+        followup = st.text_input(
+            "Follow-up command",
+            key="followup_prompt",
+            placeholder="Example: add a filter for 2020, explain SQL, export as csv",
+        )
+        followup_submitted = st.form_submit_button("Send Follow-up")
+    if followup_submitted:
+        _run_prompt(followup, label="Sending follow-up command...")
+
+
+def _render_sql_panel() -> None:
+    session = st.session_state.last_session
+    last_sql = (session or {}).get("last_sql")
+    st.subheader("Generated SQL")
     if last_sql:
-        with st.expander("Last SQL", expanded=True):
-            st.code(last_sql, language="sql")
+        st.code(last_sql, language="sql")
+    else:
+        st.info("Run a question to generate SQL.")
+
+
+def _render_result_panel() -> None:
+    session = st.session_state.last_session
+    extra = session_extra(session)
+    result = latest_result_from_session(session)
+    row_count = result["row_count"]
+    columns = result["columns"]
+    rows = result["rows"]
+
+    st.subheader("Latest Result")
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Rows", row_count if row_count is not None else "-")
+    metric_cols[1].metric("Columns", len(columns) if columns else 0)
+    metric_cols[2].metric("Preview Rows", len(rows))
+
+    if columns:
+        st.caption("Columns: " + ", ".join(columns))
+
+    with st.expander("Preview rows", expanded=False):
+        if rows:
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No row preview is available yet.")
+
+    export_cols = st.columns(3)
+    for fmt, col in zip(("markdown", "csv", "json"), export_cols):
+        if col.button(f"Export {fmt.upper()}", use_container_width=True):
+            _run_prompt(f"export latest results as {fmt}", label=f"Exporting {fmt}...")
 
     if extra.get("last_result_export"):
-        with st.expander("Last Result Export", expanded=False):
+        with st.expander("Last export", expanded=False):
             st.code(str(extra["last_result_export"]))
 
-    pending = extra.get("pending_confirmation")
+
+def _render_guardrails_panel() -> None:
+    pending = session_extra(st.session_state.last_session).get("pending_confirmation")
     if pending:
         st.warning("Write SQL is waiting for explicit confirmation.")
         with st.expander("Pending Write SQL", expanded=True):
@@ -186,43 +273,45 @@ def _render_artifacts() -> None:
             if pending.get("rationale"):
                 st.caption(str(pending["rationale"]))
 
-    row_count = extra.get("last_row_count")
-    columns = extra.get("last_rows_columns")
-    if row_count is not None or columns:
-        st.caption(
-            f"Latest result: {row_count if row_count is not None else '?'} rows"
-            + (f" | columns: {', '.join(columns)}" if columns else "")
-        )
+
+def _render_conversation_log() -> None:
+    with st.expander("Conversation log", expanded=False):
+        if not st.session_state.messages:
+            st.caption("No messages yet.")
+            return
+        for msg in st.session_state.messages:
+            role = "user" if msg["role"] == "human" else "assistant"
+            with st.chat_message(role):
+                st.markdown(msg["content"])
 
 
 def main() -> None:
-    st.set_page_config(page_title="Text-to-SQL Agent", page_icon=":speech_balloon:")
+    st.set_page_config(
+        page_title="Text-to-SQL Workbench",
+        page_icon=":mag:",
+        layout="wide",
+    )
     _init_state()
 
-    st.title("Text-to-SQL Agent")
-    st.caption("Conversational orchestrator over the text-to-SQL pipeline")
+    st.title("Text-to-SQL Workbench")
+    st.caption("DBeaver-light UI over the conversational text-to-SQL orchestrator")
 
     _render_sidebar()
 
     if st.session_state.last_error:
         st.error(st.session_state.last_error)
 
-    _render_artifacts()
+    _render_guardrails_panel()
 
-    for msg in st.session_state.messages:
-        role = "user" if msg["role"] == "human" else "assistant"
-        with st.chat_message(role):
-            st.markdown(msg["content"])
+    top_left, top_right = st.columns([1.05, 0.95], gap="large")
+    with top_left:
+        _render_query_workspace()
+    with top_right:
+        _render_sql_panel()
 
-    prompt = st.chat_input(
-        "Ask a question, modify the last SQL, export results, or inspect a database..."
-    )
-    if prompt:
-        with st.spinner(
-            "Running agent pipeline... first text-to-SQL request can take 1-3 minutes."
-        ):
-            _send_message(prompt)
-        st.rerun()
+    st.divider()
+    _render_result_panel()
+    _render_conversation_log()
 
 
 if __name__ == "__main__":

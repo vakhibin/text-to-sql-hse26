@@ -12,7 +12,9 @@ from services.ui.client import (
     OrchestratorUIClient,
     OrchestratorUIError,
     format_history_label,
+    latest_result_from_session,
     normalize_base_url,
+    session_extra,
     sql_history_from_session,
     visible_messages,
 )
@@ -54,6 +56,29 @@ def test_sql_history_from_session_newest_first() -> None:
     }
     history = sql_history_from_session(session)
     assert [entry["sql"] for entry in history] == ["SELECT 2", "SELECT 1"]
+
+
+def test_latest_result_from_session_normalizes_preview_rows() -> None:
+    session = {
+        "extra": {
+            "last_rows_columns": ["name", "age"],
+            "last_rows_preview": [["Ann", 30], ["Bob", 25]],
+            "last_row_count": 2,
+        }
+    }
+
+    result = latest_result_from_session(session)
+
+    assert result == {
+        "row_count": 2,
+        "columns": ["name", "age"],
+        "rows": [{"name": "Ann", "age": 30}, {"name": "Bob", "age": 25}],
+    }
+
+
+def test_session_extra_handles_missing_or_malformed_extra() -> None:
+    assert session_extra(None) == {}
+    assert session_extra({"extra": []}) == {}
 
 
 def test_format_history_label_truncates_long_sql() -> None:

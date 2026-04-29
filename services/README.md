@@ -78,10 +78,12 @@ tools, or tests without pulling in FastAPI.
   - `TEXT_TO_SQL_API_URL` — base URL of `text_to_sql_api` (default `http://localhost:8001`)
   - `TEXT_TO_SQL_API_TIMEOUT_S` — per-request timeout (default `120`)
   - `ORCHESTRATOR_MAX_TOOL_STEPS` — max tool-calling iterations per turn (default `6`)
-- `ui/` — Streamlit chat interface that talks to `orchestrator_api`.
+- `ui/` — Streamlit DBeaver-light workbench that talks to `orchestrator_api`.
   Phase 8+ UI features:
   - API URL, session id, user id, and active db controls in the sidebar
-  - chat loop over `POST /chat`
+  - natural-language question form over `POST /chat`
+  - generated SQL panel, latest result metadata, collapsed preview rows table,
+    export buttons, and compact conversation log
   - reload/reset session controls over `/sessions/{id}`
   - display of `last_sql`, latest result metadata, `last_result_export`,
     pending write confirmations, and recent SQL history from the session snapshot
