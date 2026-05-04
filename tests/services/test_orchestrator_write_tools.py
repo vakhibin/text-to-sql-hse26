@@ -145,7 +145,11 @@ async def test_propose_write_sql_rejects_read_only_sql() -> None:
 
 
 @pytest.mark.asyncio
-async def test_confirm_write_sql_executes_pending_sql_and_clears_confirmation() -> None:
+async def test_confirm_write_sql_executes_pending_sql_and_clears_confirmation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_path = tmp_path / "writes.jsonl"
+    monkeypatch.setenv("ORCH_AUDIT_LOG_PATH", str(audit_path))
     seen_payloads: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -174,6 +178,8 @@ async def test_confirm_write_sql_executes_pending_sql_and_clears_confirmation() 
         handler=handler,
         input_state={
             "messages": [HumanMessage(content="yes, confirm")],
+            "session_id": "s_write_confirm",
+            "user_id": "u1",
             "pending_confirmation": {
                 "type": "write_sql",
                 "sql": "DELETE FROM students WHERE id = 3",
@@ -190,6 +196,60 @@ async def test_confirm_write_sql_executes_pending_sql_and_clears_confirmation() 
     assert history[-1]["executed"] is True
     tm = _last_tool_message(state)
     assert "Confirmed write SQL executed" in tm.content
+    audit_events = [
+        json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(audit_events) == 1
+    assert audit_events[0]["session_id"] == "s_write_confirm"
+    assert audit_events[0]["user_id"] == "u1"
+    assert audit_events[0]["db_id"] == "toy"
+    assert audit_events[0]["sql"] == "DELETE FROM students WHERE id = 3"
+    assert audit_events[0]["success"] is True
+    assert audit_events[0]["row_count"] == 0
+    assert audit_events[0]["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_write_sql_audits_upstream_failure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit_path = tmp_path / "writes.jsonl"
+    monkeypatch.setenv("ORCH_AUDIT_LOG_PATH", str(audit_path))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/execute-confirmed"
+        return httpx.Response(500, text="boom")
+
+    state = await _run_one_turn(
+        replies=[
+            _tool_call("confirm_write_sql", {}, "c_fail"),
+            AIMessage(content="failed"),
+        ],
+        handler=handler,
+        input_state={
+            "messages": [HumanMessage(content="yes, confirm")],
+            "session_id": "s_write_fail",
+            "user_id": "u2",
+            "pending_confirmation": {
+                "type": "write_sql",
+                "sql": "UPDATE students SET age = 23 WHERE id = 2",
+                "db_id": "toy",
+            },
+        },
+        session_id="s_write_fail",
+    )
+
+    tm = _last_tool_message(state)
+    assert tm.status == "error"
+    audit_events = [
+        json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(audit_events) == 1
+    assert audit_events[0]["session_id"] == "s_write_fail"
+    assert audit_events[0]["user_id"] == "u2"
+    assert audit_events[0]["db_id"] == "toy"
+    assert audit_events[0]["success"] is False
+    assert "HTTP 500" in audit_events[0]["error"]
 
 
 @pytest.mark.asyncio

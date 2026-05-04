@@ -19,6 +19,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
+from orchestrator_agent.audit import append_write_audit_event
 from orchestrator_agent.clients.text_to_sql import (
     TextToSQLAPIError,
     TextToSQLClient,
@@ -130,11 +131,37 @@ def make_write_tools(client: TextToSQLClient) -> list:
         try:
             resp = await client.execute_confirmed(sql=sql, db_id=db_id)
         except (TextToSQLAPIError, httpx.HTTPError) as exc:
+            try:
+                await append_write_audit_event(
+                    session_id=state.get("session_id"),
+                    user_id=state.get("user_id"),
+                    db_id=db_id,
+                    sql=sql,
+                    success=False,
+                    error=str(exc),
+                    tool_call_id=tool_call_id,
+                )
+            except Exception:
+                pass
             return tool_error(
                 tool_call_id,
                 "confirm_write_sql",
                 f"text_to_sql_api confirmed execution failed: {exc}",
             )
+
+        try:
+            await append_write_audit_event(
+                session_id=state.get("session_id"),
+                user_id=state.get("user_id"),
+                db_id=db_id,
+                sql=sql,
+                success=bool(resp.success),
+                row_count=resp.row_count,
+                error=resp.error,
+                tool_call_id=tool_call_id,
+            )
+        except Exception:
+            pass
 
         history = append_history(
             state,
