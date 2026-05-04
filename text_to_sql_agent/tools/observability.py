@@ -55,6 +55,36 @@ def get_langfuse_client():
     )
 
 
+def get_langfuse_langchain_handler() -> Any | None:
+    """Return a Langfuse LangChain ``CallbackHandler`` if Langfuse is enabled.
+
+    Pass the returned handler in ``config={"callbacks": [...]}`` of any
+    LangChain/LangGraph ``ainvoke`` call. The handler attaches LLM, chain and
+    tool observations as children of whatever Langfuse span is the *current*
+    OTEL span at invocation time (see :func:`start_langfuse_span`). This is
+    how the orchestrator gets per-tool spans without manually wrapping each
+    tool function.
+
+    Returns ``None`` when Langfuse is disabled or the optional integration
+    package is not importable; callers should treat ``None`` as "no
+    callbacks" and proceed unchanged.
+    """
+    if not (
+        settings.langfuse_enabled
+        and settings.langfuse_public_key
+        and settings.langfuse_secret_key
+    ):
+        return None
+    try:
+        from langfuse.langchain import CallbackHandler
+    except Exception:
+        return None
+    try:
+        return CallbackHandler()
+    except Exception:
+        return None
+
+
 def start_langfuse_generation(
     *,
     name: str,

@@ -191,3 +191,112 @@ async def test_chat_validation_error(orch_client: httpx.AsyncClient) -> None:
 
     resp = await orch_client.post("/chat", json={"session_id": "s", "message": ""})
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Langfuse tracing for /chat (P1.2b)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_opens_langfuse_root_span_with_input_and_output(
+    orch_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/chat`` wraps the turn in an ``orchestrator_chat`` span with input/output."""
+    from text_to_sql_agent.tools import observability as obs_mod
+
+    from tests.tools.test_observability_tracing import _RecordingClient
+
+    client = _RecordingClient()
+    monkeypatch.setattr(obs_mod, "get_langfuse_client", lambda: client)
+
+    resp = await orch_client.post(
+        "/chat",
+        json={"session_id": "trace-1", "user_id": "u-trace", "message": "hello"},
+    )
+    assert resp.status_code == 200
+
+    assert len(client.spans) == 1
+    span = client.spans[0]
+    assert span.params["name"] == "orchestrator_chat"
+    assert span.params["as_type"] == "chain"
+    assert span.params["input"]["message"] == "hello"
+    assert span.params["input"]["session_id"] == "trace-1"
+    assert span.params["metadata"]["session_id"] == "trace-1"
+    assert span.params["metadata"]["user_id"] == "u-trace"
+
+    assert len(span.updates) == 1
+    update = span.updates[0]
+    assert update["output"]["reply"].startswith("turn=1")
+    assert update["metadata"]["session_id"] == "trace-1"
+    assert update["metadata"]["tool_call_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_passes_langfuse_callback_handler_to_graph(
+    orch_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Langfuse LangChain handler is plugged into ``config['callbacks']``.
+
+    We replace the orchestrator graph wholesale so we don't rely on the fake
+    handler being a fully-spec'd ``BaseCallbackHandler`` (LangChain would call
+    its lifecycle hooks otherwise). The point of this test is just to verify
+    the wiring at the FastAPI router level: handler in -> callback in config.
+    """
+    from services.orchestrator_api.routers import chat as chat_router
+
+    fake_handler = object()
+    monkeypatch.setattr(
+        chat_router, "get_langfuse_langchain_handler", lambda: fake_handler
+    )
+
+    captured: dict[str, list[Any]] = {"callbacks": []}
+
+    class _FakeGraph:
+        async def ainvoke(self, state: Any, config: Any = None) -> Any:
+            captured["callbacks"].extend((config or {}).get("callbacks") or [])
+            return {
+                "messages": [
+                    HumanMessage(content=state["messages"][0].content),
+                    AIMessage(content="ok"),
+                ],
+                "active_db_id": state.get("active_db_id"),
+                "last_sql": None,
+            }
+
+    original_graph = app.state.graph
+    app.state.graph = _FakeGraph()
+    try:
+        resp = await orch_client.post(
+            "/chat", json={"session_id": "cb", "message": "hi"}
+        )
+    finally:
+        app.state.graph = original_graph
+
+    assert resp.status_code == 200
+    assert fake_handler in captured["callbacks"]
+
+
+@pytest.mark.asyncio
+async def test_chat_runs_unchanged_when_langfuse_disabled(
+    orch_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Langfuse is off, no spans are created and the turn still works."""
+    from services.orchestrator_api.routers import chat as chat_router
+    from text_to_sql_agent.tools import observability as obs_mod
+
+    from tests.tools.test_observability_tracing import _RecordingClient
+
+    client = _RecordingClient()
+    monkeypatch.setattr(obs_mod, "get_langfuse_client", lambda: None)
+    monkeypatch.setattr(chat_router, "get_langfuse_langchain_handler", lambda: None)
+
+    resp = await orch_client.post(
+        "/chat", json={"session_id": "off", "message": "hello"}
+    )
+    assert resp.status_code == 200
+    assert client.spans == []  # client wasn't even consulted
+    assert resp.json()["reply"].startswith("turn=1")
