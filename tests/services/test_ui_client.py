@@ -9,11 +9,17 @@ import pytest
 
 from services.ui.client import (
     DEFAULT_ORCHESTRATOR_URL,
+    DEFAULT_TEXT_TO_SQL_URL,
     OrchestratorUIClient,
     OrchestratorUIError,
+    TextToSQLUIClient,
+    TextToSQLUIError,
+    database_options,
     format_history_label,
     latest_result_from_session,
     normalize_base_url,
+    normalize_text_to_sql_url,
+    schema_tables,
     session_extra,
     sql_history_from_session,
     visible_messages,
@@ -167,4 +173,156 @@ def test_ui_client_raises_on_http_error() -> None:
     finally:
         client.close()
 
+    assert "HTTP 500" in str(exc_info.value)
+
+
+def test_normalize_text_to_sql_url() -> None:
+    assert normalize_text_to_sql_url(" http://localhost:8001/ ") == "http://localhost:8001"
+    assert normalize_text_to_sql_url("") == DEFAULT_TEXT_TO_SQL_URL
+    assert normalize_text_to_sql_url(None) == DEFAULT_TEXT_TO_SQL_URL
+
+
+def test_database_options_normalizes_and_sorts() -> None:
+    catalog = {
+        "schema_root": "/data",
+        "databases": [
+            {"db_id": "world_1", "num_tables": 3},
+            {"db_id": "concert_singer", "num_tables": "4"},
+            {"db_id": "", "num_tables": 1},
+            "garbage",
+            {"db_id": "car_1", "num_tables": None},
+        ],
+    }
+    options = database_options(catalog)
+    assert [opt["db_id"] for opt in options] == ["car_1", "concert_singer", "world_1"]
+    by_id = {opt["db_id"]: opt for opt in options}
+    assert by_id["concert_singer"]["num_tables"] == 4
+    assert by_id["car_1"]["num_tables"] == 0
+    assert by_id["concert_singer"]["label"] == "concert_singer (4 tables)"
+
+
+def test_database_options_handles_empty_or_missing_catalog() -> None:
+    assert database_options(None) == []
+    assert database_options({}) == []
+    assert database_options({"databases": []}) == []
+
+
+def test_schema_tables_normalizes_columns_and_keys() -> None:
+    schema = {
+        "db_id": "toy",
+        "tables": [
+            {
+                "name": "students",
+                "columns": [
+                    {"name": "id", "type": "INTEGER"},
+                    {"name": "name", "type": "TEXT"},
+                ],
+                "primary_keys": ["id"],
+                "foreign_keys": [],
+            },
+            {
+                "name": "courses",
+                "columns": [
+                    {"name": "id", "type": "INTEGER"},
+                    {"name": "student_id", "type": "INTEGER"},
+                ],
+                "primary_keys": ["id"],
+                "foreign_keys": [
+                    {"column": "student_id", "ref_table": "students", "ref_column": "id"}
+                ],
+            },
+            {"name": "", "columns": []},
+        ],
+    }
+    tables = schema_tables(schema)
+    assert [t["name"] for t in tables] == ["courses", "students"]
+    courses = next(t for t in tables if t["name"] == "courses")
+    assert courses["primary_keys"] == ["id"]
+    assert courses["foreign_keys"] == [
+        {"column": "student_id", "ref_table": "students", "ref_column": "id"}
+    ]
+    students = next(t for t in tables if t["name"] == "students")
+    assert students["columns"] == [
+        {"name": "id", "type": "INTEGER"},
+        {"name": "name", "type": "TEXT"},
+    ]
+
+
+def test_schema_tables_handles_missing_or_malformed_payload() -> None:
+    assert schema_tables(None) == []
+    assert schema_tables({}) == []
+    assert schema_tables({"tables": "garbage"}) == []
+
+
+def test_text_to_sql_client_lists_databases() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/databases"
+        return _json_response(
+            {
+                "schema_root": "/data/spider",
+                "databases": [
+                    {"db_id": "concert_singer", "num_tables": 4},
+                    {"db_id": "car_1", "num_tables": 6},
+                ],
+            }
+        )
+
+    client = TextToSQLUIClient("http://test", transport=httpx.MockTransport(handler))
+    try:
+        catalog = client.list_databases()
+    finally:
+        client.close()
+    assert catalog["schema_root"] == "/data/spider"
+    assert {d["db_id"] for d in catalog["databases"]} == {"concert_singer", "car_1"}
+
+
+def test_text_to_sql_client_get_schema_returns_payload() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/databases/toy/schema"
+        return _json_response(
+            {
+                "db_id": "toy",
+                "tables": [
+                    {
+                        "name": "students",
+                        "columns": [{"name": "id", "type": "INTEGER"}],
+                        "primary_keys": ["id"],
+                        "foreign_keys": [],
+                    }
+                ],
+            }
+        )
+
+    client = TextToSQLUIClient("http://test", transport=httpx.MockTransport(handler))
+    try:
+        schema = client.get_schema("toy")
+    finally:
+        client.close()
+    assert schema is not None
+    assert schema["db_id"] == "toy"
+    assert schema["tables"][0]["name"] == "students"
+
+
+def test_text_to_sql_client_get_schema_404_returns_none() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text='{"detail":"unknown"}')
+
+    client = TextToSQLUIClient("http://test", transport=httpx.MockTransport(handler))
+    try:
+        assert client.get_schema("missing") is None
+    finally:
+        client.close()
+
+
+def test_text_to_sql_client_raises_on_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = TextToSQLUIClient("http://test", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(TextToSQLUIError) as exc_info:
+            client.list_databases()
+    finally:
+        client.close()
     assert "HTTP 500" in str(exc_info.value)

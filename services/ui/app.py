@@ -9,12 +9,18 @@ import streamlit as st
 
 from services.ui.client import (
     DEFAULT_ORCHESTRATOR_URL,
+    DEFAULT_TEXT_TO_SQL_URL,
     DEFAULT_UI_TIMEOUT_S,
     OrchestratorUIClient,
     OrchestratorUIError,
+    TextToSQLUIClient,
+    TextToSQLUIError,
+    database_options,
     format_history_label,
     latest_result_from_session,
     normalize_base_url,
+    normalize_text_to_sql_url,
+    schema_tables,
     session_extra,
     sql_history_from_session,
     visible_messages,
@@ -28,6 +34,10 @@ def _init_state() -> None:
         "orchestrator_url",
         os.getenv("ORCHESTRATOR_API_URL", DEFAULT_ORCHESTRATOR_URL),
     )
+    st.session_state.setdefault(
+        "text_to_sql_url",
+        os.getenv("TEXT_TO_SQL_API_URL", DEFAULT_TEXT_TO_SQL_URL),
+    )
     st.session_state.setdefault("active_db_id", "")
     st.session_state.setdefault("active_db_id_input", st.session_state.active_db_id)
     st.session_state.setdefault(
@@ -39,6 +49,10 @@ def _init_state() -> None:
     st.session_state.setdefault("followup_prompt", "")
     st.session_state.setdefault("last_session", None)
     st.session_state.setdefault("last_error", None)
+    st.session_state.setdefault("catalog", None)
+    st.session_state.setdefault("catalog_error", None)
+    st.session_state.setdefault("schema_cache", {})
+    st.session_state.setdefault("browse_db_id", "")
 
 
 def _client() -> OrchestratorUIClient:
@@ -46,6 +60,44 @@ def _client() -> OrchestratorUIClient:
         normalize_base_url(st.session_state.orchestrator_url),
         timeout_s=float(st.session_state.orchestrator_timeout_s),
     )
+
+
+def _text_to_sql_client() -> TextToSQLUIClient:
+    return TextToSQLUIClient(
+        normalize_text_to_sql_url(st.session_state.text_to_sql_url)
+    )
+
+
+def _refresh_catalog() -> None:
+    client = _text_to_sql_client()
+    try:
+        st.session_state.catalog = client.list_databases()
+        st.session_state.catalog_error = None
+        st.session_state.schema_cache = {}
+    except TextToSQLUIError as exc:
+        st.session_state.catalog_error = str(exc)
+        st.session_state.catalog = None
+    finally:
+        client.close()
+
+
+def _load_schema(db_id: str) -> dict | None:
+    if not db_id:
+        return None
+    cache = st.session_state.schema_cache
+    if db_id in cache:
+        return cache[db_id]
+    client = _text_to_sql_client()
+    try:
+        schema = client.get_schema(db_id)
+    except TextToSQLUIError as exc:
+        st.session_state.catalog_error = str(exc)
+        return None
+    finally:
+        client.close()
+    cache[db_id] = schema
+    st.session_state.schema_cache = cache
+    return schema
 
 
 def _load_session() -> None:
@@ -118,8 +170,86 @@ def _reset_session() -> None:
     st.session_state.last_session = None
 
 
+def _render_database_browser() -> None:
+    st.header("Databases")
+    st.text_input("Text-to-SQL API URL", key="text_to_sql_url")
+    if st.button("Refresh databases", use_container_width=True):
+        _refresh_catalog()
+
+    if st.session_state.catalog is None and st.session_state.catalog_error is None:
+        st.caption("Click Refresh to load the catalog from text_to_sql_api.")
+        return
+
+    if st.session_state.catalog_error and st.session_state.catalog is None:
+        st.error(st.session_state.catalog_error)
+        return
+
+    options = database_options(st.session_state.catalog)
+    if not options:
+        st.warning("No databases reported by text_to_sql_api.")
+        return
+
+    labels = [item["label"] for item in options]
+    db_ids = [item["db_id"] for item in options]
+
+    current = st.session_state.browse_db_id or st.session_state.active_db_id
+    default_idx = db_ids.index(current) if current in db_ids else 0
+
+    selected_label = st.selectbox(
+        "Browse",
+        labels,
+        index=default_idx,
+        key="browse_select_label",
+    )
+    selected_db_id = db_ids[labels.index(selected_label)]
+    st.session_state.browse_db_id = selected_db_id
+
+    if st.button(
+        f"Use '{selected_db_id}' in chat",
+        type="primary",
+        use_container_width=True,
+    ):
+        st.session_state.active_db_id_input = selected_db_id
+        st.session_state.active_db_id = selected_db_id
+        with st.spinner("Switching active database..."):
+            _send_message(f"Use {selected_db_id} database.")
+        st.rerun()
+
+    schema = _load_schema(selected_db_id)
+    if schema is None:
+        st.caption("Schema not available for this database.")
+        return
+
+    tables = schema_tables(schema)
+    if not tables:
+        st.caption("Database reports no tables.")
+        return
+
+    st.caption(f"Tables in `{selected_db_id}` ({len(tables)})")
+    for table in tables:
+        with st.expander(table["name"], expanded=False):
+            pks = set(table["primary_keys"])
+            for col in table["columns"]:
+                marker = "PK" if col["name"] in pks else ""
+                col_type = col["type"] or "?"
+                st.markdown(
+                    f"- **{col['name']}** `{col_type}`"
+                    + (f"  _(PK)_" if marker else "")
+                )
+            if table["foreign_keys"]:
+                st.caption("Foreign keys:")
+                for fk in table["foreign_keys"]:
+                    st.markdown(
+                        f"- `{fk['column']}` → "
+                        f"`{fk['ref_table']}.{fk['ref_column']}`"
+                    )
+
+
 def _render_sidebar() -> None:
     with st.sidebar:
+        _render_database_browser()
+
+        st.divider()
         st.header("Connection")
         st.text_input("Orchestrator API URL", key="orchestrator_url")
         st.number_input(

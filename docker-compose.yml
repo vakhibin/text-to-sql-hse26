@@ -101,10 +101,13 @@ services:
     environment:
       ORCHESTRATOR_API_URL: http://orchestrator-api:8002
       ORCHESTRATOR_UI_TIMEOUT_S: ${ORCHESTRATOR_UI_TIMEOUT_S:-300}
+      TEXT_TO_SQL_API_URL: http://text-to-sql-api:8001
     ports:
       - "8501:8501"
     volumes:
       - ./.cache:/app/.cache
     depends_on:
+      text-to-sql-api:
+        condition: service_healthy
       orchestrator-api:
         condition: service_healthy
