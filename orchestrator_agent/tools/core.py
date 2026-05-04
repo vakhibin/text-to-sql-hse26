@@ -59,6 +59,13 @@ def _run_summary(resp: RunResponse) -> str:
         lines.append(f"SQL was produced but failed to execute: {resp.error}")
     else:
         lines.append("SQL was produced but not executed.")
+    grounding: list[str] = []
+    if resp.selected_tables:
+        grounding.append(f"- Tables considered: {', '.join(resp.selected_tables)}")
+    if resp.query_sketch_text:
+        grounding.append(f"- Query plan: {resp.query_sketch_text}")
+    if grounding:
+        lines.append("Reasoning:\n" + "\n".join(grounding))
     if resp.warnings:
         lines.append(f"Warnings: {', '.join(resp.warnings)}")
     return "\n".join(lines)
@@ -74,6 +81,8 @@ def _run_meta(resp: RunResponse) -> dict[str, Any]:
         "elapsed_s": float(resp.elapsed_s or 0.0),
         "executed": bool(resp.executed),
         "error": resp.error,
+        "selected_tables": list(resp.selected_tables or []),
+        "query_sketch_text": resp.query_sketch_text,
     }
 
 

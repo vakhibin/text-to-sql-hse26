@@ -7,6 +7,7 @@ with structured success/error bodies; 404 is reserved for missing db_id.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -50,6 +51,20 @@ def _serialize_rows(rows: list[Any] | None) -> list[list[Any]] | None:
         except TypeError:
             serialized.append([str(row)])
     return serialized
+
+
+def _selected_tables_from_mschema(mschema: str | None) -> list[str] | None:
+    """Extract table names from compact mSchema lines (`table(col:type, ...)`)."""
+    if not mschema:
+        return None
+    tables: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"^([A-Za-z_][A-Za-z0-9_]*)\(", mschema, re.MULTILINE):
+        name = match.group(1)
+        if name not in seen:
+            seen.add(name)
+            tables.append(name)
+    return tables or None
 
 
 def _classify_exec_error(message: str) -> str:
@@ -166,6 +181,8 @@ async def run(req: RunRequest) -> RunResponse:
     stage_status = {k: str(v) for k, v in (state.get("stage_status") or {}).items()}
     cost_usd = float(state.get("total_cost_usd") or 0.0)
     trace_id = str(state.get("trace_id") or req.trace_id or "")
+    selected_tables = _selected_tables_from_mschema(str(state.get("filtered_schema") or ""))
+    query_sketch_text = str(state.get("query_sketch_text") or "").strip() or None
 
     rows: list[list[Any]] | None = None
     columns: list[str] | None = None
@@ -197,6 +214,8 @@ async def run(req: RunRequest) -> RunResponse:
         columns=columns,
         row_count=row_count,
         error=error_msg,
+        selected_tables=selected_tables,
+        query_sketch_text=query_sketch_text,
         stage_status=stage_status,
         warnings=warnings,
         cost_usd=cost_usd,

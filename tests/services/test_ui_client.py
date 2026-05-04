@@ -94,6 +94,8 @@ def test_latest_run_meta_from_session_normalizes_pipeline_metadata() -> None:
                 "elapsed_s": "2.5",
                 "executed": True,
                 "error": None,
+                "selected_tables": ["stadium", "concert"],
+                "query_sketch_text": "Use stadium anti-join concert.",
             }
         }
     }
@@ -108,6 +110,8 @@ def test_latest_run_meta_from_session_normalizes_pipeline_metadata() -> None:
         "elapsed_s": 2.5,
         "executed": True,
         "error": None,
+        "selected_tables": ["stadium", "concert"],
+        "query_sketch_text": "Use stadium anti-join concert.",
     }
 
 
@@ -121,6 +125,8 @@ def test_latest_run_meta_from_session_handles_missing_or_malformed_meta() -> Non
         "elapsed_s": 0.0,
         "executed": False,
         "error": None,
+        "selected_tables": [],
+        "query_sketch_text": None,
     }
 
 

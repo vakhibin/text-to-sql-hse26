@@ -408,6 +408,14 @@ def _render_pipeline_panel() -> None:
 
     if meta["trace_id"]:
         st.caption(f"Trace ID: `{meta['trace_id']}`")
+    if meta["selected_tables"] or meta["query_sketch_text"]:
+        with st.expander("Query grounding", expanded=False):
+            if meta["selected_tables"]:
+                st.caption("Selected tables")
+                st.markdown(", ".join(f"`{table}`" for table in meta["selected_tables"]))
+            if meta["query_sketch_text"]:
+                st.caption("Query sketch")
+                st.markdown(str(meta["query_sketch_text"]))
     if meta["error"]:
         st.error(str(meta["error"]))
     if meta["warnings"]:

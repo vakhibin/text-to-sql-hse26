@@ -223,6 +223,11 @@ async def test_run_uses_pipeline_and_executes_final_sql(
             "stage_status": {"selector": "success", "generator": "success"},
             "total_cost_usd": 0.0123,
             "trace_id": "trace-xyz",
+            "filtered_schema": (
+                "students(id:INTEGER, name:TEXT, age:INTEGER)\n"
+                "courses(id:INTEGER, title:TEXT, student_id:INTEGER)"
+            ),
+            "query_sketch_text": "Read students and return the first name by id.",
         }
 
     monkeypatch.setattr(pipeline_adapter, "run_pipeline", fake_run_pipeline)
@@ -246,6 +251,8 @@ async def test_run_uses_pipeline_and_executes_final_sql(
     assert body["row_count"] == 1
     assert body["cost_usd"] == pytest.approx(0.0123)
     assert body["stage_status"]["selector"] == "success"
+    assert body["selected_tables"] == ["students", "courses"]
+    assert body["query_sketch_text"] == "Read students and return the first name by id."
 
 
 @pytest.mark.asyncio

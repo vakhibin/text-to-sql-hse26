@@ -134,6 +134,8 @@ async def test_run_text_to_sql_happy_path_updates_state() -> None:
                 "warnings": ["selector: fallback"],
                 "cost_usd": 0.1234,
                 "elapsed_s": 0.1,
+                "selected_tables": ["stadium", "concert"],
+                "query_sketch_text": "Find stadiums with no matching concerts.",
             },
         )
 
@@ -164,10 +166,14 @@ async def test_run_text_to_sql_happy_path_updates_state() -> None:
         "elapsed_s": 0.1,
         "executed": True,
         "error": None,
+        "selected_tables": ["stadium", "concert"],
+        "query_sketch_text": "Find stadiums with no matching concerts.",
     }
     tm = _last_tool_message(state)
     assert tm.name == "run_text_to_sql"
     assert "42" in tm.content
+    assert "Tables considered: stadium, concert" in tm.content
+    assert "Find stadiums with no matching concerts." in tm.content
 
 
 @pytest.mark.asyncio

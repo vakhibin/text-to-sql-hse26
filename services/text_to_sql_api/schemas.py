@@ -44,6 +44,14 @@ class RunResponse(BaseModel):
     columns: Optional[list[str]] = None
     row_count: Optional[int] = None
     error: Optional[str] = None
+    selected_tables: Optional[list[str]] = Field(
+        default=None,
+        description="Tables kept in the final schema context after schema selection.",
+    )
+    query_sketch_text: Optional[str] = Field(
+        default=None,
+        description="Compact schema-grounded query plan produced before SQL generation.",
+    )
     stage_status: dict[str, str] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     cost_usd: float = 0.0

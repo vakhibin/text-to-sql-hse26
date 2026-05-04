@@ -122,6 +122,10 @@ def latest_run_meta_from_session(session: dict[str, Any] | None) -> dict[str, An
         "elapsed_s": elapsed_s,
         "executed": bool(raw.get("executed")),
         "error": raw.get("error"),
+        "selected_tables": [
+            str(table) for table in (raw.get("selected_tables") or []) if str(table).strip()
+        ],
+        "query_sketch_text": str(raw.get("query_sketch_text") or "").strip() or None,
     }
 
 
