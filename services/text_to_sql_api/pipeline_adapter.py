@@ -21,6 +21,12 @@ from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import SQLAgentState, make_initial_state
 from text_to_sql_agent.prompts import refiner as _refiner_prompt  # noqa: F401  (ensure prompt module imports cleanly)
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
+from text_to_sql_agent.tools.observability import (
+    flush_langfuse,
+    safe_state_snapshot,
+    start_langfuse_span,
+    update_langfuse_span,
+)
 from text_to_sql_agent.tools.schema_loader import load_schema, schema_to_mschema
 from text_to_sql_agent.tools.sql_executor import SQLExecutionResult, execute_sql
 
@@ -73,17 +79,76 @@ async def run_pipeline(
     schema_root: str | None = None,
     trace_id: str | None = None,
 ) -> dict[str, Any]:
-    """Invoke the full LangGraph pipeline and return the final state dict."""
+    """Invoke the full LangGraph pipeline and return the final state dict.
+
+    The whole graph invocation is wrapped in a Langfuse root span so that
+    every stage span and LLM generation produced inside lands in the same
+    trace. Tracing is best-effort: when Langfuse is disabled, the wrapper
+    is a no-op and pipeline behavior is unchanged.
+    """
     graph = await _get_graph()
+    resolved_trace = trace_id or str(uuid4())
     state = make_initial_state(
         question=question,
         db_id=db_id,
         evidence=evidence,
         schema_root=_resolve_schema_root(schema_root),
-        trace_id=trace_id or str(uuid4()),
+        trace_id=resolved_trace,
     )
-    result = await graph.ainvoke(state)
-    return dict(result)
+    span, ctx = start_langfuse_span(
+        name="text_to_sql_run",
+        trace_id=resolved_trace,
+        input_payload=safe_state_snapshot(
+            {
+                "question": question,
+                "db_id": db_id,
+                "evidence": evidence,
+                "schema_root": state.get("schema_root"),
+                "trace_id": resolved_trace,
+            }
+        ),
+        metadata={
+            "trace_id": resolved_trace,
+            "db_id": db_id,
+            "schema_root": state.get("schema_root"),
+        },
+        as_type="chain",
+    )
+    try:
+        with ctx:
+            result = await graph.ainvoke(state)
+    except Exception as exc:
+        update_langfuse_span(
+            span,
+            level="ERROR",
+            status_message=f"{type(exc).__name__}: {exc}",
+            metadata={"trace_id": resolved_trace, "db_id": db_id},
+        )
+        flush_langfuse()
+        raise
+
+    final = dict(result)
+    update_langfuse_span(
+        span,
+        output=safe_state_snapshot(
+            {
+                "final_sql": final.get("final_sql"),
+                "best_sql": final.get("best_sql"),
+                "stage_status": final.get("stage_status"),
+                "stage_timings": final.get("stage_timings"),
+                "warnings": final.get("warnings"),
+                "error_message": final.get("error_message"),
+                "total_cost_usd": final.get("total_cost_usd"),
+            }
+        ),
+        metadata={
+            "trace_id": resolved_trace,
+            "db_id": db_id,
+            "total_cost_usd": final.get("total_cost_usd"),
+        },
+    )
+    flush_langfuse()
+    return final
 
 
 # ---- /execute -----------------------------------------------------------

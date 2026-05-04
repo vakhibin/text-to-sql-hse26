@@ -11,6 +11,7 @@ from text_to_sql_agent.agents.query_sketcher import run_query_sketcher
 from text_to_sql_agent.agents.refiner import run_refiner
 from text_to_sql_agent.agents.selector import run_selector
 from text_to_sql_agent.graph.state import SQLAgentState
+from text_to_sql_agent.graph.tracing import trace_pipeline_stage
 
 
 def _route_after_selector(state: SQLAgentState) -> str:
@@ -65,13 +66,16 @@ def build_graph():
     """Build StateGraph wiring: selector → value_linker → sketcher → generator → exec_filter → voting → refiner."""
     graph = StateGraph(SQLAgentState)
 
-    graph.add_node("selector", run_selector)
-    graph.add_node("value_linker", run_value_linker)
-    graph.add_node("sketcher", run_query_sketcher)
-    graph.add_node("generator", run_generator)
-    graph.add_node("execution_filter", run_execution_filter)
-    graph.add_node("voting", run_voting)
-    graph.add_node("refiner", run_refiner)
+    graph.add_node("selector", trace_pipeline_stage("selector", run_selector))
+    graph.add_node("value_linker", trace_pipeline_stage("value_linker", run_value_linker))
+    graph.add_node("sketcher", trace_pipeline_stage("sketcher", run_query_sketcher))
+    graph.add_node("generator", trace_pipeline_stage("generator", run_generator))
+    graph.add_node(
+        "execution_filter",
+        trace_pipeline_stage("execution_filter", run_execution_filter),
+    )
+    graph.add_node("voting", trace_pipeline_stage("voting", run_voting))
+    graph.add_node("refiner", trace_pipeline_stage("refiner", run_refiner))
 
     graph.add_edge(START, "selector")
     graph.add_conditional_edges(

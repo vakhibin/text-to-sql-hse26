@@ -195,6 +195,20 @@ Langfuse is optional and controlled by env:
 - `LANGFUSE_SECRET_KEY`
 - `LANGFUSE_HOST`
 
+When Langfuse is enabled, each `/run` produces a hierarchical trace:
+- root span `text_to_sql_run` (chain), opened by `pipeline_adapter.run_pipeline`
+- one child span per LangGraph stage (`selector`, `value_linker`, `sketcher`,
+  `generator`, `execution_filter`, `voting`, `refiner`), opened by
+  `text_to_sql_agent.graph.tracing.trace_pipeline_stage`
+- LLM generations from `LLMRouter.ainvoke_with_metadata` automatically attach
+  as children of the current stage span via OTEL parent context
+
+Stage span input/output is verbose-but-bounded: nested dicts are kept whole,
+strings are truncated to ~4KB and lists to ~50 items by
+`safe_state_snapshot`. Tracing is best-effort — when Langfuse is disabled or
+the SDK fails, the wrappers fall through to no-op contexts and the pipeline
+runs unchanged.
+
 ## Benchmark Runners
 
 Spider runner:
