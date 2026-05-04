@@ -7,11 +7,17 @@ context propagates through ``await`` boundaries).
 
 Tracing is best-effort: when Langfuse is disabled or fails to start, the node
 runs unchanged and the wrapper short-circuits to a no-op context manager.
+
+Each stage can declare ``input_keys`` and ``output_keys`` so the Langfuse
+``input`` / ``output`` panes show only what is meaningful for that stage.
+Service fields that the node also writes (``stage_status``, ``stage_timings``,
+``warnings``, ``llm_usage``, ``total_cost_usd``, ...) are routed to
+``metadata`` instead, which keeps the trace readable in the UI.
 """
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 from text_to_sql_agent.graph.state import SQLAgentState
 from text_to_sql_agent.tools.observability import (
@@ -23,18 +29,27 @@ from text_to_sql_agent.tools.observability import (
 NodeFn = Callable[[SQLAgentState], Awaitable[Mapping[str, Any] | SQLAgentState]]
 
 
-def _stage_input_payload(state: Mapping[str, Any]) -> dict[str, Any]:
-    """Snapshot the state right before a stage runs (verbose, bounded)."""
-    return safe_state_snapshot(dict(state))
-
-
-def _stage_output_payload(
-    update: Mapping[str, Any] | SQLAgentState | None,
+def _filter_keys(
+    payload: Mapping[str, Any] | None, keys: tuple[str, ...] | None
 ) -> dict[str, Any]:
-    """Snapshot the patch returned by a node (LangGraph nodes return updates)."""
-    if update is None:
+    """Return a snapshot of ``payload`` restricted to ``keys`` when provided."""
+    if payload is None:
         return {}
-    return safe_state_snapshot(dict(update))
+    if keys is None:
+        return safe_state_snapshot(dict(payload))
+    selected = {key: payload.get(key) for key in keys if key in payload}
+    return safe_state_snapshot(selected)
+
+
+def _patch_extras(
+    patch: Mapping[str, Any] | None, output_keys: tuple[str, ...] | None
+) -> dict[str, Any]:
+    """Service fields the node added but that are not the stage's main output."""
+    if patch is None or output_keys is None:
+        return {}
+    output_set = set(output_keys)
+    extras = {key: value for key, value in patch.items() if key not in output_set}
+    return safe_state_snapshot(extras)
 
 
 def trace_pipeline_stage(
@@ -42,15 +57,31 @@ def trace_pipeline_stage(
     fn: NodeFn,
     *,
     as_type: str = "chain",
+    input_keys: Iterable[str] | None = None,
+    output_keys: Iterable[str] | None = None,
 ) -> NodeFn:
     """Wrap a LangGraph node with a Langfuse span.
 
-    The wrapped node:
-    - opens an observation named ``name`` as the current OTEL span
-    - records a verbose-but-bounded snapshot of the incoming state as ``input``
-    - records the node's returned patch as ``output``
-    - marks the span ``ERROR`` and re-raises if the node raises
+    Args:
+        name: stage name shown in Langfuse.
+        fn: the original LangGraph node coroutine.
+        as_type: Langfuse observation type (``chain`` by default).
+        input_keys: when given, only those state fields are recorded as
+            Langfuse ``input``. The remaining state is dropped from the trace.
+        output_keys: when given, only those patch fields go into Langfuse
+            ``output``. Other patch fields move into ``metadata.patch_extras``
+            so they remain inspectable without polluting the output panel.
+
+    Behavior:
+        - opens an observation named ``name`` as the current OTEL span
+        - records the (filtered) state snapshot as ``input``
+        - records the (filtered) patch as ``output``
+        - puts service fields and after-run ``stage_status`` into ``metadata``
+        - marks the span ``ERROR`` and re-raises if the node raises
     """
+
+    input_filter = tuple(input_keys) if input_keys is not None else None
+    output_filter = tuple(output_keys) if output_keys is not None else None
 
     async def wrapped(state: SQLAgentState) -> Any:
         trace_id = state.get("trace_id")
@@ -64,7 +95,7 @@ def trace_pipeline_stage(
         span, ctx = start_langfuse_span(
             name=name,
             trace_id=trace_id,
-            input_payload=_stage_input_payload(state),
+            input_payload=_filter_keys(state, input_filter),
             metadata=metadata,
             as_type=as_type,
         )
@@ -89,10 +120,20 @@ def trace_pipeline_stage(
         except Exception:
             post_status = None
 
+        patch = result if isinstance(result, Mapping) else None
+        update_metadata: dict[str, Any] = {
+            "stage": name,
+            "db_id": db_id,
+            "stage_status": post_status,
+        }
+        extras = _patch_extras(patch, output_filter)
+        if extras:
+            update_metadata["patch_extras"] = extras
+
         update_langfuse_span(
             span,
-            output=_stage_output_payload(result),
-            metadata={"stage": name, "db_id": db_id, "stage_status": post_status},
+            output=_filter_keys(patch, output_filter),
+            metadata=update_metadata,
         )
         return result
 

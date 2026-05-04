@@ -284,3 +284,50 @@ def test_trace_pipeline_stage_runs_node_when_langfuse_disabled(
     wrapped = tracing_module.trace_pipeline_stage("voting", fake_node)
     result = asyncio.run(wrapped(_base_state()))
     assert result == {"final_sql": "SELECT 1"}
+
+
+def test_trace_pipeline_stage_filters_input_and_output_by_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stage-specific keys keep Langfuse panes lean and route service fields to metadata."""
+    client = _RecordingClient()
+    monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: client)
+
+    async def fake_selector(state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "filtered_schema": "students(id,name)",
+            "retrieved_schema_context": "ctx",
+            "stage_status": {"selector": "success"},
+            "stage_timings": {"selector": 0.42},
+            "warnings": ["minor warning"],
+            "llm_usage": [{"model": "x", "tokens": 100}],
+        }
+
+    wrapped = tracing_module.trace_pipeline_stage(
+        "selector",
+        fake_selector,
+        input_keys=("question", "db_id", "evidence"),
+        output_keys=("filtered_schema", "retrieved_schema_context"),
+    )
+    state = _base_state(evidence="extra hint", llm_usage=[])
+    asyncio.run(wrapped(state))
+
+    span = client.spans[0]
+
+    # Input panel must be restricted to declared keys only.
+    assert set(span.params["input"].keys()) == {"question", "db_id", "evidence"}
+
+    # Output panel carries only stage-specific result fields.
+    update = span.updates[0]
+    assert set(update["output"].keys()) == {"filtered_schema", "retrieved_schema_context"}
+
+    # Service fields the node also wrote land in metadata.patch_extras.
+    extras = update["metadata"]["patch_extras"]
+    assert set(extras.keys()) == {
+        "stage_status",
+        "stage_timings",
+        "warnings",
+        "llm_usage",
+    }
+    assert extras["stage_timings"] == {"selector": 0.42}
+    assert update["metadata"]["stage_status"] == "success"

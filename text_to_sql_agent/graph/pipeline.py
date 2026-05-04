@@ -66,16 +66,99 @@ def build_graph():
     """Build StateGraph wiring: selector → value_linker → sketcher → generator → exec_filter → voting → refiner."""
     graph = StateGraph(SQLAgentState)
 
-    graph.add_node("selector", trace_pipeline_stage("selector", run_selector))
-    graph.add_node("value_linker", trace_pipeline_stage("value_linker", run_value_linker))
-    graph.add_node("sketcher", trace_pipeline_stage("sketcher", run_query_sketcher))
-    graph.add_node("generator", trace_pipeline_stage("generator", run_generator))
+    graph.add_node(
+        "selector",
+        trace_pipeline_stage(
+            "selector",
+            run_selector,
+            input_keys=("question", "db_id", "evidence", "missing_entities", "sketcher_selector_loops"),
+            output_keys=("filtered_schema", "retrieved_schema_context"),
+        ),
+    )
+    graph.add_node(
+        "value_linker",
+        trace_pipeline_stage(
+            "value_linker",
+            run_value_linker,
+            input_keys=("question", "filtered_schema"),
+            output_keys=("value_hints", "column_hints"),
+        ),
+    )
+    graph.add_node(
+        "sketcher",
+        trace_pipeline_stage(
+            "sketcher",
+            run_query_sketcher,
+            input_keys=(
+                "question",
+                "evidence",
+                "filtered_schema",
+                "value_hints",
+                "column_hints",
+            ),
+            output_keys=("query_sketch", "query_sketch_text", "missing_entities"),
+        ),
+    )
+    graph.add_node(
+        "generator",
+        trace_pipeline_stage(
+            "generator",
+            run_generator,
+            input_keys=(
+                "question",
+                "evidence",
+                "filtered_schema",
+                "value_hints",
+                "column_hints",
+                "query_sketch_text",
+            ),
+            output_keys=("candidates",),
+        ),
+    )
     graph.add_node(
         "execution_filter",
-        trace_pipeline_stage("execution_filter", run_execution_filter),
+        trace_pipeline_stage(
+            "execution_filter",
+            run_execution_filter,
+            input_keys=("question", "db_id", "candidates"),
+            output_keys=(
+                "valid_candidates",
+                "candidate_diagnostics",
+                "best_sql",
+                "selection_reasoning",
+                "selection_method",
+            ),
+        ),
     )
-    graph.add_node("voting", trace_pipeline_stage("voting", run_voting))
-    graph.add_node("refiner", trace_pipeline_stage("refiner", run_refiner))
+    graph.add_node(
+        "voting",
+        trace_pipeline_stage(
+            "voting",
+            run_voting,
+            input_keys=("valid_candidates", "candidate_diagnostics"),
+            output_keys=(
+                "best_sql",
+                "selection_reasoning",
+                "selection_confidence",
+                "selection_method",
+                "selection_needs_refine",
+            ),
+        ),
+    )
+    graph.add_node(
+        "refiner",
+        trace_pipeline_stage(
+            "refiner",
+            run_refiner,
+            input_keys=("question", "db_id", "best_sql", "error_message", "filtered_schema"),
+            output_keys=(
+                "final_sql",
+                "execution_result",
+                "refine_attempts",
+                "error_message",
+            ),
+        ),
+    )
 
     graph.add_edge(START, "selector")
     graph.add_conditional_edges(
