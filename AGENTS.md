@@ -209,6 +209,15 @@ strings are truncated to ~4KB and lists to ~50 items by
 the SDK fails, the wrappers fall through to no-op contexts and the pipeline
 runs unchanged.
 
+The `docker-compose.yml` ships a self-hosted Langfuse v3 stack
+(`langfuse-web`, `langfuse-worker`, `langfuse-postgres`,
+`langfuse-clickhouse`, `langfuse-redis`, `langfuse-minio`) so a single
+`docker compose up --build` brings up the agent and observability together.
+A dev project (`text-to-sql-dev` with keys `pk-lf-text-to-sql-dev` /
+`sk-lf-text-to-sql-dev`) is auto-provisioned on first start via
+`LANGFUSE_INIT_*`. Open http://localhost:3000 to inspect traces. Rotate
+the credentials in `.env.compose.example` before any non-local deployment.
+
 ## Benchmark Runners
 
 Spider runner:
