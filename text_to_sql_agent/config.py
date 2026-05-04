@@ -96,6 +96,12 @@ class AgentSettings(BaseSettings):
     langfuse_public_key: str | None = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: str | None = Field(default=None, alias="LANGFUSE_SECRET_KEY")
     langfuse_host: str = Field(default="https://cloud.langfuse.com", alias="LANGFUSE_HOST")
+    # Public host (browser-facing) for building shareable trace URLs. In Docker
+    # the API talks to ``langfuse-web:3000`` internally but the UI in the user's
+    # browser must hit ``localhost:3000``.
+    langfuse_public_host: str | None = Field(default=None, alias="LANGFUSE_PUBLIC_HOST")
+    # Project id used to build the deep link ``{host}/project/{id}/traces/{tid}``.
+    langfuse_project_id: str | None = Field(default=None, alias="LANGFUSE_PROJECT_ID")
 
 
 settings = AgentSettings()

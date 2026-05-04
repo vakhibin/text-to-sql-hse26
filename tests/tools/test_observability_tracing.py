@@ -75,6 +75,64 @@ def test_safe_state_snapshot_falls_back_to_str_for_non_serializable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# normalize_langfuse_trace_id / langfuse_trace_url
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_langfuse_trace_id_strips_uuid_dashes_and_lowercases() -> None:
+    out = obs_module.normalize_langfuse_trace_id("AB12CD34-EF56-7890-ABCD-1234567890AB")
+    assert out == "ab12cd34ef567890abcd1234567890ab"
+    assert len(out) == 32
+
+
+def test_normalize_langfuse_trace_id_accepts_already_normalized_hex() -> None:
+    out = obs_module.normalize_langfuse_trace_id("ab12cd34ef567890abcd1234567890ab")
+    assert out == "ab12cd34ef567890abcd1234567890ab"
+
+
+def test_normalize_langfuse_trace_id_rejects_short_or_non_hex() -> None:
+    assert obs_module.normalize_langfuse_trace_id(None) is None
+    assert obs_module.normalize_langfuse_trace_id("") is None
+    assert obs_module.normalize_langfuse_trace_id("not-a-trace") is None
+    assert obs_module.normalize_langfuse_trace_id("ZZZZ" * 8) is None  # 32 chars but non-hex
+
+
+def test_langfuse_trace_url_builds_deep_link_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(obs_module.settings, "langfuse_public_host", "http://localhost:3000/")
+    monkeypatch.setattr(obs_module.settings, "langfuse_project_id", "text-to-sql-dev")
+
+    url = obs_module.langfuse_trace_url("ab12cd34ef567890abcd1234567890ab")
+    assert (
+        url
+        == "http://localhost:3000/project/text-to-sql-dev/traces/ab12cd34ef567890abcd1234567890ab"
+    )
+
+
+def test_langfuse_trace_url_returns_none_when_project_or_host_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(obs_module.settings, "langfuse_public_host", None)
+    monkeypatch.setattr(obs_module.settings, "langfuse_host", "")
+    monkeypatch.setattr(obs_module.settings, "langfuse_project_id", "p")
+    assert obs_module.langfuse_trace_url("ab12cd34ef567890abcd1234567890ab") is None
+
+    monkeypatch.setattr(obs_module.settings, "langfuse_public_host", "http://localhost:3000")
+    monkeypatch.setattr(obs_module.settings, "langfuse_project_id", None)
+    assert obs_module.langfuse_trace_url("ab12cd34ef567890abcd1234567890ab") is None
+
+
+def test_langfuse_trace_url_returns_none_for_invalid_trace_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(obs_module.settings, "langfuse_public_host", "http://localhost:3000")
+    monkeypatch.setattr(obs_module.settings, "langfuse_project_id", "p")
+    assert obs_module.langfuse_trace_url(None) is None
+    assert obs_module.langfuse_trace_url("not-a-trace") is None
+
+
+# ---------------------------------------------------------------------------
 # Langfuse SDK stub: emulates the parts we use of the v4 client.
 # ---------------------------------------------------------------------------
 
@@ -249,6 +307,30 @@ def test_start_langfuse_span_returns_nullcontext_when_client_raises(
     )
     with ctx:
         pass
+
+
+def test_start_langfuse_span_forwards_trace_context_when_id_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``langfuse_trace_id`` is given, it must reach the SDK as ``trace_context``.
+
+    This is what lets the API return a deep link to a deterministic trace id
+    even before Langfuse has flushed any observations.
+    """
+    client = _RecordingClient()
+    monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: client)
+
+    with obs_module.start_langfuse_span(
+        name="text_to_sql_run",
+        trace_id="session-xyz",
+        langfuse_trace_id="ab12cd34ef567890abcd1234567890ab",
+    ):
+        pass
+
+    span = client.spans[0]
+    assert span.params["trace_context"] == {
+        "trace_id": "ab12cd34ef567890abcd1234567890ab"
+    }
 
 
 # ---------------------------------------------------------------------------

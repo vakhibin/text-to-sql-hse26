@@ -55,7 +55,9 @@ def get_langfuse_client():
     )
 
 
-def get_langfuse_langchain_handler() -> Any | None:
+def get_langfuse_langchain_handler(
+    *, trace_id: str | None = None
+) -> Any | None:
     """Return a Langfuse LangChain ``CallbackHandler`` if Langfuse is enabled.
 
     Pass the returned handler in ``config={"callbacks": [...]}`` of any
@@ -64,6 +66,13 @@ def get_langfuse_langchain_handler() -> Any | None:
     OTEL span at invocation time (see :func:`start_langfuse_span`). This is
     how the orchestrator gets per-tool spans without manually wrapping each
     tool function.
+
+    Args:
+        trace_id: optional W3C-compatible trace id (32 lowercase hex chars,
+            e.g. ``uuid4().hex``) so callbacks attach to a deterministic trace.
+            When provided, the handler is bound via ``trace_context`` and
+            child observations land on the same trace as
+            :func:`start_langfuse_span(langfuse_trace_id=trace_id, ...)`.
 
     Returns ``None`` when Langfuse is disabled or the optional integration
     package is not importable; callers should treat ``None`` as "no
@@ -80,9 +89,50 @@ def get_langfuse_langchain_handler() -> Any | None:
     except Exception:
         return None
     try:
+        if trace_id:
+            return CallbackHandler(trace_context={"trace_id": trace_id})
         return CallbackHandler()
     except Exception:
         return None
+
+
+def normalize_langfuse_trace_id(value: str | None) -> str | None:
+    """Normalize a UUID-ish string into Langfuse's W3C trace id format.
+
+    Langfuse expects 32 lowercase hex characters (the OpenTelemetry trace id
+    format). UUID4 strings carry the same 16 bytes but include four hyphens,
+    so we strip them and lowercase. Anything that doesn't match the expected
+    shape is rejected (``None``) so we don't silently send malformed ids.
+    """
+    if not value:
+        return None
+    candidate = value.replace("-", "").lower()
+    if len(candidate) != 32:
+        return None
+    try:
+        int(candidate, 16)
+    except ValueError:
+        return None
+    return candidate
+
+
+def langfuse_trace_url(trace_id: str | None) -> str | None:
+    """Build a browser-facing Langfuse trace URL, or ``None`` if not configured.
+
+    Resulting shape is ``{public_host}/project/{project_id}/traces/{trace_id}``.
+    Falls back to ``langfuse_host`` when ``langfuse_public_host`` is unset
+    (e.g. when running outside Docker against Langfuse Cloud).
+    """
+    normalized = normalize_langfuse_trace_id(trace_id)
+    if normalized is None:
+        return None
+    project_id = settings.langfuse_project_id
+    if not project_id:
+        return None
+    host = settings.langfuse_public_host or settings.langfuse_host
+    if not host:
+        return None
+    return f"{host.rstrip('/')}/project/{project_id}/traces/{normalized}"
 
 
 def start_langfuse_generation(
@@ -191,6 +241,7 @@ def start_langfuse_span(
     input_payload: Any | None = None,
     metadata: dict[str, Any] | None = None,
     as_type: str = "span",
+    langfuse_trace_id: str | None = None,
 ) -> AbstractContextManager[Any]:
     """Return a context manager that opens a Langfuse observation as the *current* OTEL span.
 
@@ -198,11 +249,19 @@ def start_langfuse_span(
     generations created inside become children of this span automatically
     via OTEL context propagation.
 
-    Usage::
-
-        with start_langfuse_span(name="selector", trace_id=...):
-            # do work
-            update_langfuse_span(output=...)
+    Args:
+        name: observation name shown in Langfuse.
+        trace_id: free-form correlation id stored as Langfuse ``session_id``
+            (used to group multiple traces in the UI). Not the Langfuse
+            trace id.
+        input_payload: ``input`` panel payload.
+        metadata: extra metadata; ``None`` values are dropped.
+        as_type: Langfuse observation type (``span`` / ``chain`` / ``tool``).
+        langfuse_trace_id: optional 32-char lowercase hex (W3C trace id).
+            When provided, this becomes the root trace id, so a deep link
+            ``{host}/project/{pid}/traces/{trace_id}`` can be returned to
+            the UI before the trace is flushed. Use
+            :func:`normalize_langfuse_trace_id` to convert from UUID4.
 
     When Langfuse is disabled or fails to initialize, returns ``nullcontext()``
     so callers can keep the same shape unconditionally.
@@ -222,6 +281,8 @@ def start_langfuse_span(
         params["input"] = input_payload
     if merged_metadata:
         params["metadata"] = merged_metadata
+    if langfuse_trace_id:
+        params["trace_context"] = {"trace_id": langfuse_trace_id}
 
     try:
         return client.start_as_current_observation(**params)

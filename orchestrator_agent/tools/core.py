@@ -83,6 +83,7 @@ def _run_meta(resp: RunResponse) -> dict[str, Any]:
         "error": resp.error,
         "selected_tables": list(resp.selected_tables or []),
         "query_sketch_text": resp.query_sketch_text,
+        "langfuse_trace_url": resp.langfuse_trace_url,
     }
 
 

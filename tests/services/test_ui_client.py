@@ -96,6 +96,7 @@ def test_latest_run_meta_from_session_normalizes_pipeline_metadata() -> None:
                 "error": None,
                 "selected_tables": ["stadium", "concert"],
                 "query_sketch_text": "Use stadium anti-join concert.",
+                "langfuse_trace_url": "http://localhost:3000/project/p/traces/abc",
             }
         }
     }
@@ -112,6 +113,7 @@ def test_latest_run_meta_from_session_normalizes_pipeline_metadata() -> None:
         "error": None,
         "selected_tables": ["stadium", "concert"],
         "query_sketch_text": "Use stadium anti-join concert.",
+        "langfuse_trace_url": "http://localhost:3000/project/p/traces/abc",
     }
 
 
@@ -125,6 +127,7 @@ def test_latest_run_meta_from_session_handles_missing_or_malformed_meta() -> Non
         "elapsed_s": 0.0,
         "executed": False,
         "error": None,
+        "langfuse_trace_url": None,
         "selected_tables": [],
         "query_sketch_text": None,
     }

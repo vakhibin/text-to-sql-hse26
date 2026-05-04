@@ -99,6 +99,7 @@ def latest_run_meta_from_session(session: dict[str, Any] | None) -> dict[str, An
             "elapsed_s": 0.0,
             "executed": False,
             "error": None,
+            "langfuse_trace_url": None,
         }
     stage_status = raw.get("stage_status") or {}
     if not isinstance(stage_status, dict):
@@ -114,6 +115,7 @@ def latest_run_meta_from_session(session: dict[str, Any] | None) -> dict[str, An
         elapsed_s = float(raw.get("elapsed_s") or 0.0)
     except (TypeError, ValueError):
         elapsed_s = 0.0
+    trace_url = raw.get("langfuse_trace_url")
     return {
         "trace_id": raw.get("trace_id"),
         "stage_status": {str(k): str(v) for k, v in stage_status.items()},
@@ -126,6 +128,7 @@ def latest_run_meta_from_session(session: dict[str, Any] | None) -> dict[str, An
             str(table) for table in (raw.get("selected_tables") or []) if str(table).strip()
         ],
         "query_sketch_text": str(raw.get("query_sketch_text") or "").strip() or None,
+        "langfuse_trace_url": str(trace_url) if trace_url else None,
     }
 
 

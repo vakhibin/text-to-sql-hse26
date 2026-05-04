@@ -14,6 +14,7 @@ turns of one chat collapse into a single Langfuse session in the UI.
 from __future__ import annotations
 
 from typing import Any, cast
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from langchain_core.messages import AIMessage, HumanMessage
@@ -23,6 +24,7 @@ from services.orchestrator_api.schemas import ChatRequest, ChatResponse
 from text_to_sql_agent.tools.observability import (
     flush_langfuse,
     get_langfuse_langchain_handler,
+    langfuse_trace_url,
     safe_state_snapshot,
     start_langfuse_span,
     update_langfuse_span,
@@ -44,7 +46,14 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     if req.active_db_id is not None:
         input_state["active_db_id"] = req.active_db_id
 
-    handler = get_langfuse_langchain_handler()
+    # One Langfuse trace per chat turn. We pin the W3C trace id ourselves so we
+    # can return a deep link to the trace in the response, and we share it with
+    # the LangChain CallbackHandler so all child observations land on the same
+    # trace.
+    lf_trace_id = uuid4().hex
+    trace_url = langfuse_trace_url(lf_trace_id)
+
+    handler = get_langfuse_langchain_handler(trace_id=lf_trace_id)
     if handler is not None:
         config["callbacks"] = [handler]
 
@@ -68,6 +77,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             "active_db_id": req.active_db_id,
         },
         as_type="chain",
+        langfuse_trace_id=lf_trace_id,
     ):
         try:
             result = await graph.ainvoke(input_state, config=config)
@@ -129,6 +139,8 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         active_db_id=result.get("active_db_id"),
         last_sql=result.get("last_sql"),
         warnings=[],
+        trace_id=lf_trace_id if trace_url else None,
+        langfuse_trace_url=trace_url,
     )
 
 

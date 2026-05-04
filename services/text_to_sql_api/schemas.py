@@ -56,6 +56,10 @@ class RunResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     cost_usd: float = 0.0
     elapsed_s: float = 0.0
+    langfuse_trace_url: Optional[str] = Field(
+        default=None,
+        description="Browser-facing Langfuse trace URL for this run, when Langfuse is configured.",
+    )
 
 
 # ---- /execute ------------------------------------------------------------

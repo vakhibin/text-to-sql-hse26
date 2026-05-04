@@ -249,7 +249,9 @@ async def test_chat_passes_langfuse_callback_handler_to_graph(
 
     fake_handler = object()
     monkeypatch.setattr(
-        chat_router, "get_langfuse_langchain_handler", lambda: fake_handler
+        chat_router,
+        "get_langfuse_langchain_handler",
+        lambda **_: fake_handler,
     )
 
     captured: dict[str, list[Any]] = {"callbacks": []}
@@ -292,7 +294,9 @@ async def test_chat_runs_unchanged_when_langfuse_disabled(
 
     client = _RecordingClient()
     monkeypatch.setattr(obs_mod, "get_langfuse_client", lambda: None)
-    monkeypatch.setattr(chat_router, "get_langfuse_langchain_handler", lambda: None)
+    monkeypatch.setattr(
+        chat_router, "get_langfuse_langchain_handler", lambda **_: None
+    )
 
     resp = await orch_client.post(
         "/chat", json={"session_id": "off", "message": "hello"}

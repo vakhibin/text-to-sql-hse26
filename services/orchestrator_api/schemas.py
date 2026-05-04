@@ -43,6 +43,14 @@ class ChatResponse(BaseModel):
     active_db_id: Optional[str] = None
     last_sql: Optional[str] = None
     warnings: list[str] = Field(default_factory=list)
+    trace_id: Optional[str] = Field(
+        default=None,
+        description="Langfuse trace id for this turn (32-char hex), when Langfuse is enabled.",
+    )
+    langfuse_trace_url: Optional[str] = Field(
+        default=None,
+        description="Browser-facing Langfuse trace URL for this turn, when Langfuse is configured.",
+    )
 
 
 class SessionDeleteResponse(BaseModel):

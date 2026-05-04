@@ -54,6 +54,11 @@ def _init_state() -> None:
     st.session_state.setdefault("catalog_error", None)
     st.session_state.setdefault("schema_cache", {})
     st.session_state.setdefault("browse_db_id", "")
+    # Latest /chat turn's Langfuse trace URL (orchestrator span). Surfaced as
+    # a button next to "Open Langfuse trace" so the user can jump straight to
+    # the conversational trace; per-pipeline-run links live in the pipeline
+    # panel via meta["langfuse_trace_url"].
+    st.session_state.setdefault("last_chat_trace_url", None)
 
 
 def _client() -> OrchestratorUIClient:
@@ -152,6 +157,7 @@ def _send_message(prompt: str) -> bool:
     st.session_state.last_error = None
     if response.get("active_db_id"):
         st.session_state.active_db_id = response["active_db_id"]
+    st.session_state.last_chat_trace_url = response.get("langfuse_trace_url")
     st.session_state.messages.extend(
         visible_messages(response.get("messages_delta") or [])[1:]
     )
@@ -360,6 +366,15 @@ def _render_sql_panel() -> None:
     else:
         st.info("Run a question to generate SQL.")
 
+    chat_trace_url = st.session_state.get("last_chat_trace_url")
+    if chat_trace_url:
+        st.link_button(
+            "Open chat trace in Langfuse",
+            chat_trace_url,
+            help="Inspect this chat turn end-to-end: agent decisions, tool calls, "
+            "and any pipeline run nested inside.",
+        )
+
 
 def _stage_icon(status: str | None) -> str:
     normalized = (status or "").lower()
@@ -408,6 +423,12 @@ def _render_pipeline_panel() -> None:
 
     if meta["trace_id"]:
         st.caption(f"Trace ID: `{meta['trace_id']}`")
+    if meta.get("langfuse_trace_url"):
+        st.link_button(
+            "Open Langfuse trace",
+            meta["langfuse_trace_url"],
+            help="Open this run in the Langfuse UI: stage spans, LLM generations, latency, cost.",
+        )
     if meta["selected_tables"] or meta["query_sketch_text"]:
         with st.expander("Query grounding", expanded=False):
             if meta["selected_tables"]:

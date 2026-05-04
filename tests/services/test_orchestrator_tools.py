@@ -168,6 +168,7 @@ async def test_run_text_to_sql_happy_path_updates_state() -> None:
         "error": None,
         "selected_tables": ["stadium", "concert"],
         "query_sketch_text": "Find stadiums with no matching concerts.",
+        "langfuse_trace_url": None,
     }
     tm = _last_tool_message(state)
     assert tm.name == "run_text_to_sql"

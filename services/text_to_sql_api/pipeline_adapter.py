@@ -23,6 +23,8 @@ from text_to_sql_agent.prompts import refiner as _refiner_prompt  # noqa: F401  
 from text_to_sql_agent.tools.llm_router import LLMRouter, ModelRole
 from text_to_sql_agent.tools.observability import (
     flush_langfuse,
+    langfuse_trace_url,
+    normalize_langfuse_trace_id,
     safe_state_snapshot,
     start_langfuse_span,
     update_langfuse_span,
@@ -88,6 +90,9 @@ async def run_pipeline(
     """
     graph = await _get_graph()
     resolved_trace = trace_id or str(uuid4())
+    # Bind the same UUID to a deterministic Langfuse trace id (32 hex), so the
+    # API can return a deep link to the trace before the SDK has flushed it.
+    lf_trace_id = normalize_langfuse_trace_id(resolved_trace)
     state = make_initial_state(
         question=question,
         db_id=db_id,
@@ -116,6 +121,7 @@ async def run_pipeline(
             "schema_root": state.get("schema_root"),
         },
         as_type="chain",
+        langfuse_trace_id=lf_trace_id,
     ):
         try:
             result = await graph.ainvoke(state)
@@ -147,6 +153,10 @@ async def run_pipeline(
                 "total_cost_usd": final.get("total_cost_usd"),
             },
         )
+    # Stash the deep link in the returned state so the FastAPI router can
+    # forward it to the UI without recomputing it. ``None`` when Langfuse is
+    # disabled or its public host / project id are not configured.
+    final["langfuse_trace_url"] = langfuse_trace_url(lf_trace_id)
     flush_langfuse()
     return final
 

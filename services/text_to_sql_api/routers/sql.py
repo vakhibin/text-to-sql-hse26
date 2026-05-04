@@ -220,6 +220,7 @@ async def run(req: RunRequest) -> RunResponse:
         warnings=warnings,
         cost_usd=cost_usd,
         elapsed_s=elapsed,
+        langfuse_trace_url=state.get("langfuse_trace_url"),
     )
 
 
