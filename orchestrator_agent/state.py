@@ -12,6 +12,9 @@ Design notes:
 - ``active_db_id``, ``last_sql`` and the ``last_*`` result fields are the
   "conversation artifacts" that tools populate and subsequent turns consume.
   They are intentionally small so the checkpointer persists them cheaply.
+- ``last_run_meta`` carries compact observability metadata for the latest
+  full text-to-SQL run so the UI can show pipeline stages, latency, cost, and
+  warnings without parsing tool-message text.
 - ``sql_history`` is an append-only, capped list of executed / produced SQL
   entries. Tools replace the whole list on update (there is no reducer) —
   each tool reads the current list from injected state, appends, and caps
@@ -39,6 +42,7 @@ class OrchestratorState(TypedDict, total=False):
     last_rows_columns: Optional[list[str]]
     last_row_count: Optional[int]
     last_result_export: Optional[str]
+    last_run_meta: Optional[dict[str, Any]]
 
     sql_history: list[dict[str, Any]]
 

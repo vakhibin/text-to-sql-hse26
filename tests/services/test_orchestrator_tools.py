@@ -130,9 +130,9 @@ async def test_run_text_to_sql_happy_path_updates_state() -> None:
                 "rows": [[42]],
                 "columns": ["cnt"],
                 "row_count": 1,
-                "stage_status": {},
-                "warnings": [],
-                "cost_usd": 0.0,
+                "stage_status": {"selector": "success", "generator": "success"},
+                "warnings": ["selector: fallback"],
+                "cost_usd": 0.1234,
                 "elapsed_s": 0.1,
             },
         )
@@ -156,6 +156,15 @@ async def test_run_text_to_sql_happy_path_updates_state() -> None:
     assert state["last_rows_preview"] == [[42]]
     assert state["last_rows_columns"] == ["cnt"]
     assert state["last_row_count"] == 1
+    assert state["last_run_meta"] == {
+        "trace_id": "tr",
+        "stage_status": {"selector": "success", "generator": "success"},
+        "warnings": ["selector: fallback"],
+        "cost_usd": 0.1234,
+        "elapsed_s": 0.1,
+        "executed": True,
+        "error": None,
+    }
     tm = _last_tool_message(state)
     assert tm.name == "run_text_to_sql"
     assert "42" in tm.content

@@ -18,6 +18,7 @@ from services.ui.client import (
     database_options,
     format_history_label,
     latest_result_from_session,
+    latest_run_meta_from_session,
     normalize_base_url,
     normalize_text_to_sql_url,
     schema_tables,
@@ -360,6 +361,61 @@ def _render_sql_panel() -> None:
         st.info("Run a question to generate SQL.")
 
 
+def _stage_icon(status: str | None) -> str:
+    normalized = (status or "").lower()
+    if normalized in {"success", "skipped", "ok", "done"}:
+        return "OK"
+    if normalized in {"failed", "error"}:
+        return "ERR"
+    if normalized in {"running", "in_progress"}:
+        return "RUN"
+    return "PENDING"
+
+
+def _render_pipeline_panel() -> None:
+    meta = latest_run_meta_from_session(st.session_state.last_session)
+    stage_status = meta["stage_status"]
+    st.subheader("Pipeline")
+
+    if not stage_status and not meta["trace_id"]:
+        st.info("Run a question to see pipeline stages, cost, and latency.")
+        return
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Latency", f"{meta['elapsed_s']:.2f}s")
+    metric_cols[1].metric("Cost", f"${meta['cost_usd']:.4f}")
+    metric_cols[2].metric("Warnings", len(meta["warnings"]))
+    metric_cols[3].metric("Executed", "yes" if meta["executed"] else "no")
+
+    default_stages = [
+        "selector",
+        "value_linker",
+        "query_sketcher",
+        "generator",
+        "execution_filter",
+        "voting",
+        "judge",
+        "refiner",
+    ]
+    stages = [stage for stage in default_stages if stage in stage_status]
+    stages.extend(stage for stage in stage_status if stage not in stages)
+
+    if stages:
+        with st.expander("Stage status", expanded=True):
+            for stage in stages:
+                status = stage_status.get(stage)
+                st.markdown(f"- `{_stage_icon(status)}` **{stage}**: `{status or 'pending'}`")
+
+    if meta["trace_id"]:
+        st.caption(f"Trace ID: `{meta['trace_id']}`")
+    if meta["error"]:
+        st.error(str(meta["error"]))
+    if meta["warnings"]:
+        with st.expander("Warnings", expanded=False):
+            for warning in meta["warnings"]:
+                st.warning(warning)
+
+
 def _render_result_panel() -> None:
     session = st.session_state.last_session
     extra = session_extra(session)
@@ -439,6 +495,8 @@ def main() -> None:
     with top_right:
         _render_sql_panel()
 
+    st.divider()
+    _render_pipeline_panel()
     st.divider()
     _render_result_panel()
     _render_conversation_log()

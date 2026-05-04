@@ -64,6 +64,19 @@ def _run_summary(resp: RunResponse) -> str:
     return "\n".join(lines)
 
 
+def _run_meta(resp: RunResponse) -> dict[str, Any]:
+    """Return compact run metadata for UI rendering and session inspection."""
+    return {
+        "trace_id": resp.trace_id,
+        "stage_status": dict(resp.stage_status or {}),
+        "warnings": list(resp.warnings or []),
+        "cost_usd": float(resp.cost_usd or 0.0),
+        "elapsed_s": float(resp.elapsed_s or 0.0),
+        "executed": bool(resp.executed),
+        "error": resp.error,
+    }
+
+
 def _execute_summary(resp: ExecuteResponse) -> str:
     if resp.success:
         return (
@@ -118,6 +131,7 @@ def make_core_tools(client: TextToSQLClient) -> list:
         summary = _run_summary(resp)
         update: dict[str, Any] = {
             "active_db_id": resolved,
+            "last_run_meta": _run_meta(resp),
             "messages": [
                 ToolMessage(
                     content=summary, tool_call_id=tool_call_id, name="run_text_to_sql"

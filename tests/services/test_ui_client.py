@@ -17,6 +17,7 @@ from services.ui.client import (
     database_options,
     format_history_label,
     latest_result_from_session,
+    latest_run_meta_from_session,
     normalize_base_url,
     normalize_text_to_sql_url,
     schema_tables,
@@ -79,6 +80,47 @@ def test_latest_result_from_session_normalizes_preview_rows() -> None:
         "row_count": 2,
         "columns": ["name", "age"],
         "rows": [{"name": "Ann", "age": 30}, {"name": "Bob", "age": 25}],
+    }
+
+
+def test_latest_run_meta_from_session_normalizes_pipeline_metadata() -> None:
+    session = {
+        "extra": {
+            "last_run_meta": {
+                "trace_id": "trace-1",
+                "stage_status": {"selector": "success", "generator": "failed"},
+                "warnings": ["selector: fallback"],
+                "cost_usd": "0.1234",
+                "elapsed_s": "2.5",
+                "executed": True,
+                "error": None,
+            }
+        }
+    }
+
+    meta = latest_run_meta_from_session(session)
+
+    assert meta == {
+        "trace_id": "trace-1",
+        "stage_status": {"selector": "success", "generator": "failed"},
+        "warnings": ["selector: fallback"],
+        "cost_usd": 0.1234,
+        "elapsed_s": 2.5,
+        "executed": True,
+        "error": None,
+    }
+
+
+def test_latest_run_meta_from_session_handles_missing_or_malformed_meta() -> None:
+    assert latest_run_meta_from_session(None)["stage_status"] == {}
+    assert latest_run_meta_from_session({"extra": {"last_run_meta": []}}) == {
+        "trace_id": None,
+        "stage_status": {},
+        "warnings": [],
+        "cost_usd": 0.0,
+        "elapsed_s": 0.0,
+        "executed": False,
+        "error": None,
     }
 
 

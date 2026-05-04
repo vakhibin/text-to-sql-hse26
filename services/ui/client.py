@@ -87,6 +87,44 @@ def latest_result_from_session(session: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
+def latest_run_meta_from_session(session: dict[str, Any] | None) -> dict[str, Any]:
+    """Return normalized metadata for the latest full text-to-SQL run."""
+    raw = session_extra(session).get("last_run_meta") or {}
+    if not isinstance(raw, dict):
+        return {
+            "trace_id": None,
+            "stage_status": {},
+            "warnings": [],
+            "cost_usd": 0.0,
+            "elapsed_s": 0.0,
+            "executed": False,
+            "error": None,
+        }
+    stage_status = raw.get("stage_status") or {}
+    if not isinstance(stage_status, dict):
+        stage_status = {}
+    warnings = raw.get("warnings") or []
+    if not isinstance(warnings, list):
+        warnings = [str(warnings)]
+    try:
+        cost_usd = float(raw.get("cost_usd") or 0.0)
+    except (TypeError, ValueError):
+        cost_usd = 0.0
+    try:
+        elapsed_s = float(raw.get("elapsed_s") or 0.0)
+    except (TypeError, ValueError):
+        elapsed_s = 0.0
+    return {
+        "trace_id": raw.get("trace_id"),
+        "stage_status": {str(k): str(v) for k, v in stage_status.items()},
+        "warnings": [str(w) for w in warnings],
+        "cost_usd": cost_usd,
+        "elapsed_s": elapsed_s,
+        "executed": bool(raw.get("executed")),
+        "error": raw.get("error"),
+    }
+
+
 def format_history_label(index: int, entry: dict[str, Any]) -> str:
     """Human-readable label for sidebar SQL history."""
     source = entry.get("source") or "?"
