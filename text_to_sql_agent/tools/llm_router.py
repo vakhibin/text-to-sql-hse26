@@ -45,6 +45,21 @@ class LLMInvocationError(LLMRouterError):
 T = TypeVar("T")
 
 
+def _model_for_langfuse(model_name: str) -> str:
+    """Strip the provider prefix so Langfuse can match its default model registry.
+
+    Langfuse ships a built-in cost table keyed by short model names
+    (``gpt-4.1``, ``gemini-2.5-pro``, ...). OpenRouter exposes the same models
+    as ``provider/model`` (``openai/gpt-4.1``, ``google/gemini-2.5-pro``).
+    Keeping the slash hides our generations from the cost calculator, so we
+    drop the prefix when reporting the model to Langfuse. The full id is
+    still recorded in span metadata via ``model_full_id``.
+    """
+    if "/" in model_name:
+        return model_name.split("/", 1)[1]
+    return model_name
+
+
 def _is_gateway_timeout(exc: BaseException) -> bool:
     if getattr(exc, "status_code", None) == 504:
         return True
@@ -146,6 +161,11 @@ class LLMRouter:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=settings.llm_timeout_seconds,
+                # Ask OpenRouter to include the actual upstream cost in the
+                # response. Without this flag the response carries only token
+                # counts and ``cost`` stays at 0, which makes Langfuse fall
+                # back to its default-model price table.
+                extra_body={"usage": {"include": True}},
             )
         return self._cache[cache_key]
 
@@ -250,12 +270,19 @@ class LLMRouter:
             model_override=model_name,
             temperature_override=temperature_override,
         )
+        langfuse_model = _model_for_langfuse(model_name)
+        base_generation_metadata: dict[str, Any] = {
+            "db_id": db_id,
+            "stage": stage_name,
+            "role": role.value,
+            "model_full_id": model_name,
+        }
         generation, generation_ctx = start_langfuse_generation(
             name=stage_name,
             trace_id=trace_id,
-            model=model_name,
+            model=langfuse_model,
             input_payload=list(messages),
-            metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
+            metadata=base_generation_metadata,
         )
         try:
             with generation_ctx:
@@ -289,9 +316,7 @@ class LLMRouter:
                             output=normalized_text,
                             usage=usage,
                             metadata={
-                                "db_id": db_id,
-                                "stage": stage_name,
-                                "role": role.value,
+                                **base_generation_metadata,
                                 "structured_parsing_error": str(parsing_error),
                             },
                         )
@@ -305,7 +330,7 @@ class LLMRouter:
                         generation,
                         output=normalized_text,
                         usage=usage,
-                        metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
+                        metadata=base_generation_metadata,
                     )
                     return LLMInvokeResult(
                         text=normalized_text,
@@ -320,7 +345,7 @@ class LLMRouter:
                 generation,
                 level="ERROR",
                 status_message=str(exc),
-                metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
+                metadata=base_generation_metadata,
             )
             raise LLMInvocationError(str(exc)) from exc
 
@@ -330,7 +355,7 @@ class LLMRouter:
             generation,
             output=normalized_text,
             usage=usage,
-            metadata={"db_id": db_id, "stage": stage_name, "role": role.value},
+            metadata=base_generation_metadata,
         )
         return LLMInvokeResult(
             text=normalized_text,
