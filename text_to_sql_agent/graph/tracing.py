@@ -92,49 +92,53 @@ def trace_pipeline_stage(
             "db_id": db_id,
             "question_preview": (str(question)[:200] if question else None),
         }
-        span, ctx = start_langfuse_span(
+        # IMPORTANT: every Langfuse span update must happen INSIDE the ``with``
+        # block. ``update_langfuse_span()`` writes to the *current* OTEL span,
+        # so it only finds our span between ``__enter__`` and ``__exit__``.
+        with start_langfuse_span(
             name=name,
             trace_id=trace_id,
             input_payload=_filter_keys(state, input_filter),
             metadata=metadata,
             as_type=as_type,
-        )
-        try:
-            with ctx:
+        ):
+            try:
                 result = await fn(state)
-        except Exception as exc:
-            update_langfuse_span(
-                span,
-                level="ERROR",
-                status_message=f"{type(exc).__name__}: {exc}",
-                metadata={"stage": name, "db_id": db_id},
-            )
-            raise
+            except Exception as exc:
+                update_langfuse_span(
+                    level="ERROR",
+                    status_message=f"{type(exc).__name__}: {exc}",
+                    metadata={"stage": name, "db_id": db_id},
+                )
+                raise
 
-        post_status = None
-        try:
-            if isinstance(result, Mapping):
-                stage_status = result.get("stage_status") or {}
-                if isinstance(stage_status, Mapping):
-                    post_status = stage_status.get(name)
-        except Exception:
             post_status = None
+            try:
+                if isinstance(result, Mapping):
+                    stage_status = result.get("stage_status") or {}
+                    if isinstance(stage_status, Mapping):
+                        post_status = stage_status.get(name)
+            except Exception:
+                post_status = None
 
-        patch = result if isinstance(result, Mapping) else None
-        update_metadata: dict[str, Any] = {
-            "stage": name,
-            "db_id": db_id,
-            "stage_status": post_status,
-        }
-        extras = _patch_extras(patch, output_filter)
-        if extras:
-            update_metadata["patch_extras"] = extras
+            patch = result if isinstance(result, Mapping) else None
+            update_metadata: dict[str, Any] = {
+                "stage": name,
+                "db_id": db_id,
+                "stage_status": post_status,
+            }
+            extras = _patch_extras(patch, output_filter)
+            if extras:
+                update_metadata["patch_extras"] = extras
 
-        update_langfuse_span(
-            span,
-            output=_filter_keys(patch, output_filter),
-            metadata=update_metadata,
-        )
+            # If none of the declared ``output_keys`` are present in the patch,
+            # pass ``output=None`` so Langfuse keeps the "no output" placeholder
+            # instead of rendering an empty ``{}`` blob.
+            output_payload = _filter_keys(patch, output_filter)
+            update_langfuse_span(
+                output=output_payload if output_payload else None,
+                metadata=update_metadata,
+            )
         return result
 
     wrapped.__name__ = f"traced_{name}"

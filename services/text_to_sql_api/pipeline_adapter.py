@@ -95,7 +95,10 @@ async def run_pipeline(
         schema_root=_resolve_schema_root(schema_root),
         trace_id=resolved_trace,
     )
-    span, ctx = start_langfuse_span(
+    # Span updates write to the *current* OTEL span, so they must happen
+    # INSIDE the ``with`` block — after ``__exit__`` the span is closed and
+    # the update would land on the wrong (or no) current span.
+    with start_langfuse_span(
         name="text_to_sql_run",
         trace_id=resolved_trace,
         input_payload=safe_state_snapshot(
@@ -113,40 +116,37 @@ async def run_pipeline(
             "schema_root": state.get("schema_root"),
         },
         as_type="chain",
-    )
-    try:
-        with ctx:
+    ):
+        try:
             result = await graph.ainvoke(state)
-    except Exception as exc:
-        update_langfuse_span(
-            span,
-            level="ERROR",
-            status_message=f"{type(exc).__name__}: {exc}",
-            metadata={"trace_id": resolved_trace, "db_id": db_id},
-        )
-        flush_langfuse()
-        raise
+        except Exception as exc:
+            update_langfuse_span(
+                level="ERROR",
+                status_message=f"{type(exc).__name__}: {exc}",
+                metadata={"trace_id": resolved_trace, "db_id": db_id},
+            )
+            flush_langfuse()
+            raise
 
-    final = dict(result)
-    update_langfuse_span(
-        span,
-        output=safe_state_snapshot(
-            {
-                "final_sql": final.get("final_sql"),
-                "best_sql": final.get("best_sql"),
-                "stage_status": final.get("stage_status"),
-                "stage_timings": final.get("stage_timings"),
-                "warnings": final.get("warnings"),
-                "error_message": final.get("error_message"),
+        final = dict(result)
+        update_langfuse_span(
+            output=safe_state_snapshot(
+                {
+                    "final_sql": final.get("final_sql"),
+                    "best_sql": final.get("best_sql"),
+                    "stage_status": final.get("stage_status"),
+                    "stage_timings": final.get("stage_timings"),
+                    "warnings": final.get("warnings"),
+                    "error_message": final.get("error_message"),
+                    "total_cost_usd": final.get("total_cost_usd"),
+                }
+            ),
+            metadata={
+                "trace_id": resolved_trace,
+                "db_id": db_id,
                 "total_cost_usd": final.get("total_cost_usd"),
-            }
-        ),
-        metadata={
-            "trace_id": resolved_trace,
-            "db_id": db_id,
-            "total_cost_usd": final.get("total_cost_usd"),
-        },
-    )
+            },
+        )
     flush_langfuse()
     return final
 

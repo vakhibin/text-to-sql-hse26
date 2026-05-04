@@ -277,15 +277,16 @@ class LLMRouter:
             "role": role.value,
             "model_full_id": model_name,
         }
-        generation, generation_ctx = start_langfuse_generation(
+        # Generation updates write to the *current* OTEL span, so they only
+        # land on the right generation while we're inside the ``with`` block.
+        with start_langfuse_generation(
             name=stage_name,
             trace_id=trace_id,
             model=langfuse_model,
             input_payload=list(messages),
             metadata=base_generation_metadata,
-        )
-        try:
-            with generation_ctx:
+        ):
+            try:
                 if structured_output is not None:
                     structured_llm = llm.with_structured_output(structured_output, include_raw=True)
                     packed = await _ainvoke_with_gateway_retry(lambda: structured_llm.ainvoke(messages))
@@ -312,7 +313,6 @@ class LLMRouter:
                     )
                     if parsing_error is not None:
                         update_langfuse_generation(
-                            generation,
                             output=normalized_text,
                             usage=usage,
                             metadata={
@@ -327,7 +327,6 @@ class LLMRouter:
                             structured=None,
                         )
                     update_langfuse_generation(
-                        generation,
                         output=normalized_text,
                         usage=usage,
                         metadata=base_generation_metadata,
@@ -340,29 +339,26 @@ class LLMRouter:
                     )
 
                 response = await _ainvoke_with_gateway_retry(lambda: llm.ainvoke(messages))
-        except Exception as exc:  # pragma: no cover - runtime/network path
-            update_langfuse_generation(
-                generation,
-                level="ERROR",
-                status_message=str(exc),
-                metadata=base_generation_metadata,
-            )
-            raise LLMInvocationError(str(exc)) from exc
-
-        normalized_text = self._normalize_text(response.content)
-        usage = self._extract_usage(response=response, model_name=model_name, stage=stage_name)
-        update_langfuse_generation(
-            generation,
-            output=normalized_text,
-            usage=usage,
-            metadata=base_generation_metadata,
-        )
-        return LLMInvokeResult(
-            text=normalized_text,
-            usage=usage.as_dict(),
-            response_metadata=getattr(response, "response_metadata", {}) or {},
-            structured=None,
-        )
+                normalized_text = self._normalize_text(response.content)
+                usage = self._extract_usage(response=response, model_name=model_name, stage=stage_name)
+                update_langfuse_generation(
+                    output=normalized_text,
+                    usage=usage,
+                    metadata=base_generation_metadata,
+                )
+                return LLMInvokeResult(
+                    text=normalized_text,
+                    usage=usage.as_dict(),
+                    response_metadata=getattr(response, "response_metadata", {}) or {},
+                    structured=None,
+                )
+            except Exception as exc:  # pragma: no cover - runtime/network path
+                update_langfuse_generation(
+                    level="ERROR",
+                    status_message=str(exc),
+                    metadata=base_generation_metadata,
+                )
+                raise LLMInvocationError(str(exc)) from exc
 
     async def ainvoke(
         self,

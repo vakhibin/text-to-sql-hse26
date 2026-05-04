@@ -62,11 +62,26 @@ def start_langfuse_generation(
     model: str,
     input_payload: Any,
     metadata: dict[str, Any] | None = None,
-) -> tuple[Any, AbstractContextManager[Any]]:
-    """Start a Langfuse generation context if enabled."""
+) -> AbstractContextManager[Any]:
+    """Return a context manager that opens a Langfuse generation observation.
+
+    Usage::
+
+        with start_langfuse_generation(name=..., model=...):
+            # call the model
+            update_langfuse_generation(output=..., usage=...)
+
+    When Langfuse is disabled or fails to initialize, this returns a
+    ``nullcontext`` so the caller can keep the same shape unconditionally.
+    The yielded value is the LangfuseGeneration handle (or ``None`` when
+    disabled), but in practice updates should go through
+    :func:`update_langfuse_generation` which uses
+    ``client.update_current_generation(...)`` and therefore does not need the
+    handle.
+    """
     client = get_langfuse_client()
     if client is None:
-        return None, nullcontext()
+        return nullcontext()
 
     params: dict[str, Any] = {"name": name, "model": model, "input": input_payload}
     if trace_id:
@@ -75,14 +90,12 @@ def start_langfuse_generation(
         params["metadata"] = metadata
 
     try:
-        generation = client.start_as_current_observation(as_type="generation", **params)
-        return generation, generation
+        return client.start_as_current_observation(as_type="generation", **params)
     except Exception:
-        return None, nullcontext()
+        return nullcontext()
 
 
 def update_langfuse_generation(
-    generation: Any,
     *,
     output: Any | None = None,
     usage: LLMUsageRecord | None = None,
@@ -90,8 +103,15 @@ def update_langfuse_generation(
     status_message: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Best-effort generation update, never raising to caller."""
-    if generation is None:
+    """Best-effort update of the *current* Langfuse generation observation.
+
+    Must be called from inside ``with start_langfuse_generation(...)`` (or any
+    other span/generation context started via the Langfuse SDK) — the SDK
+    routes the update to whatever generation is the current OTEL span.
+    Calling outside any context is a safe no-op.
+    """
+    client = get_langfuse_client()
+    if client is None:
         return
     payload: dict[str, Any] = {}
     if output is not None:
@@ -110,9 +130,10 @@ def update_langfuse_generation(
         payload["status_message"] = status_message
     if metadata:
         payload["metadata"] = metadata
+    if not payload:
+        return
     try:
-        if payload:
-            generation.update(**payload)
+        client.update_current_generation(**payload)
     except Exception:
         return
 
@@ -140,20 +161,25 @@ def start_langfuse_span(
     input_payload: Any | None = None,
     metadata: dict[str, Any] | None = None,
     as_type: str = "span",
-) -> tuple[Any, AbstractContextManager[Any]]:
-    """Start a Langfuse observation as the *current* OTEL span.
+) -> AbstractContextManager[Any]:
+    """Return a context manager that opens a Langfuse observation as the *current* OTEL span.
 
     Used to wrap pipeline stages and orchestrator tool calls so that LLM
-    generations created inside become children of the stage span automatically.
+    generations created inside become children of this span automatically
+    via OTEL context propagation.
 
-    The returned context manager is always safe to ``with``; when Langfuse is
-    disabled or fails to initialize it falls back to ``nullcontext()`` and the
-    span handle is ``None``. Callers should pass the handle to
-    :func:`update_langfuse_span` regardless.
+    Usage::
+
+        with start_langfuse_span(name="selector", trace_id=...):
+            # do work
+            update_langfuse_span(output=...)
+
+    When Langfuse is disabled or fails to initialize, returns ``nullcontext()``
+    so callers can keep the same shape unconditionally.
     """
     client = get_langfuse_client()
     if client is None:
-        return None, nullcontext()
+        return nullcontext()
 
     merged_metadata: dict[str, Any] = {}
     if trace_id:
@@ -168,22 +194,30 @@ def start_langfuse_span(
         params["metadata"] = merged_metadata
 
     try:
-        observation_ctx = client.start_as_current_observation(**params)
-        return observation_ctx, observation_ctx
+        return client.start_as_current_observation(**params)
     except Exception:
-        return None, nullcontext()
+        return nullcontext()
 
 
 def update_langfuse_span(
-    span: Any,
     *,
     output: Any | None = None,
     level: str | None = None,
     status_message: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Best-effort span update, never raising to caller."""
-    if span is None:
+    """Best-effort update of the *current* Langfuse span.
+
+    Must be called from inside ``with start_langfuse_span(...)`` — the SDK
+    routes the update to whatever span is the current OTEL span. Calling
+    outside any active span is a safe no-op.
+
+    Note: ``client.update_current_span(...)`` does not accept ``cost_details``
+    or ``usage_details`` (those belong to generations). For LLM-call updates
+    use :func:`update_langfuse_generation` instead.
+    """
+    client = get_langfuse_client()
+    if client is None:
         return
     payload: dict[str, Any] = {}
     if output is not None:
@@ -197,7 +231,7 @@ def update_langfuse_span(
     if not payload:
         return
     try:
-        span.update(**payload)
+        client.update_current_span(**payload)
     except Exception:
         return
 

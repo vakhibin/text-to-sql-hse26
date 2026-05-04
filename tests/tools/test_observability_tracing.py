@@ -4,10 +4,15 @@ These tests do not talk to a real Langfuse backend. They patch
 ``get_langfuse_client`` to return a stub so we can assert that:
 
 - spans are opened with the expected name / metadata / input
-- node return values are forwarded to ``span.update`` as ``output``
+- node return values are forwarded to ``update_current_span`` as ``output``
 - node exceptions still propagate but the span is marked ERROR
 - helpers degrade to no-ops when Langfuse is disabled
 - ``safe_state_snapshot`` truncates strings/lists deterministically
+
+The stub client mimics the Langfuse v4 SDK shape we depend on:
+``start_as_current_observation`` returns a context manager that becomes the
+*current* observation while inside ``with``, and ``update_current_span`` /
+``update_current_generation`` route to whichever observation is current.
 """
 
 from __future__ import annotations
@@ -70,6 +75,69 @@ def test_safe_state_snapshot_falls_back_to_str_for_non_serializable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Langfuse SDK stub: emulates the parts we use of the v4 client.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingObservation:
+    """Stand-in for LangfuseSpan/LangfuseGeneration as a context manager.
+
+    Captures the kwargs from ``start_as_current_observation(**params)`` and
+    every later ``update(**kwargs)`` so tests can assert on them.
+    """
+
+    def __init__(self, client: "_RecordingClient", params: dict[str, Any]) -> None:
+        self._client = client
+        self.params = params
+        self.name = params.get("name")
+        self.updates: list[dict[str, Any]] = []
+        self.entered = False
+        self.exited = False
+
+    def __enter__(self) -> "_RecordingObservation":
+        self.entered = True
+        self._client._stack.append(self)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool | None:
+        self.exited = True
+        if self._client._stack and self._client._stack[-1] is self:
+            self._client._stack.pop()
+        return False
+
+    def update(self, **kwargs: Any) -> "_RecordingObservation":
+        self.updates.append(kwargs)
+        return self
+
+
+class _RecordingClient:
+    """Captures every observation opened via ``start_as_current_observation``.
+
+    Mirrors ``client.update_current_span`` / ``client.update_current_generation``
+    by routing them to whichever observation is currently on the stack
+    (i.e. inside an active ``with``).
+    """
+
+    def __init__(self) -> None:
+        self.spans: list[_RecordingObservation] = []
+        self._stack: list[_RecordingObservation] = []
+
+    def start_as_current_observation(self, **params: Any) -> _RecordingObservation:
+        obs = _RecordingObservation(self, params)
+        self.spans.append(obs)
+        return obs
+
+    # The real client has these two methods. Both write to the *current* span.
+    def update_current_span(self, **kwargs: Any) -> None:
+        if self._stack:
+            self._stack[-1].update(**kwargs)
+
+    def update_current_generation(self, **kwargs: Any) -> None:
+        if self._stack:
+            self._stack[-1].update(**kwargs)
+
+
+# ---------------------------------------------------------------------------
 # start_langfuse_span / update_langfuse_span (no client)
 # ---------------------------------------------------------------------------
 
@@ -78,54 +146,23 @@ def test_start_langfuse_span_returns_nullcontext_when_client_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: None)
-    span, ctx = obs_module.start_langfuse_span(
+    ctx = obs_module.start_langfuse_span(
         name="selector", trace_id="t-1", input_payload={"q": "x"}
     )
-    assert span is None
     with ctx:
         pass
 
 
-def test_update_langfuse_span_no_op_on_none() -> None:
-    obs_module.update_langfuse_span(None, output={"x": 1}, level="ERROR")
+def test_update_langfuse_span_no_op_when_client_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: None)
+    obs_module.update_langfuse_span(output={"x": 1}, level="ERROR")
 
 
 # ---------------------------------------------------------------------------
 # start_langfuse_span with stubbed client
 # ---------------------------------------------------------------------------
-
-
-class _RecordingSpan:
-    """Minimal LangfuseSpan stub that captures update() calls."""
-
-    def __init__(self, name: str, params: dict[str, Any]) -> None:
-        self.name = name
-        self.params = params
-        self.updates: list[dict[str, Any]] = []
-        self.entered = False
-        self.exited = False
-
-    def __enter__(self) -> "_RecordingSpan":
-        self.entered = True
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool | None:
-        self.exited = True
-        return False
-
-    def update(self, **kwargs: Any) -> "_RecordingSpan":
-        self.updates.append(kwargs)
-        return self
-
-
-class _RecordingClient:
-    def __init__(self) -> None:
-        self.spans: list[_RecordingSpan] = []
-
-    def start_as_current_observation(self, **params: Any):
-        span = _RecordingSpan(name=params["name"], params=params)
-        self.spans.append(span)
-        return span
 
 
 def test_start_langfuse_span_passes_name_input_and_session_id(
@@ -134,15 +171,13 @@ def test_start_langfuse_span_passes_name_input_and_session_id(
     client = _RecordingClient()
     monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: client)
 
-    span, ctx = obs_module.start_langfuse_span(
+    with obs_module.start_langfuse_span(
         name="selector",
         trace_id="trace-42",
         input_payload={"question": "hi"},
         metadata={"db_id": "toy"},
         as_type="span",
-    )
-    assert span is client.spans[0]
-    with ctx:
+    ):
         pass
 
     recorded = client.spans[0]
@@ -152,24 +187,22 @@ def test_start_langfuse_span_passes_name_input_and_session_id(
     assert recorded.params["metadata"] == {"session_id": "trace-42", "db_id": "toy"}
 
 
-def test_update_langfuse_span_forwards_payload(
+def test_update_langfuse_span_writes_to_current_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Update inside ``with`` must land on the active observation."""
     client = _RecordingClient()
     monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: client)
 
-    span, ctx = obs_module.start_langfuse_span(
+    with obs_module.start_langfuse_span(
         name="generator", trace_id=None, input_payload={"x": 1}
-    )
-    with ctx:
-        pass
-    obs_module.update_langfuse_span(
-        span,
-        output={"candidates": ["SELECT 1"]},
-        level="ERROR",
-        status_message="boom",
-        metadata={"stage": "generator"},
-    )
+    ):
+        obs_module.update_langfuse_span(
+            output={"candidates": ["SELECT 1"]},
+            level="ERROR",
+            status_message="boom",
+            metadata={"stage": "generator"},
+        )
 
     assert client.spans[0].updates == [
         {
@@ -181,6 +214,28 @@ def test_update_langfuse_span_forwards_payload(
     ]
 
 
+def test_update_langfuse_span_outside_with_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Update *after* exiting the ``with`` block must not corrupt the closed span.
+
+    This is the regression behind the ``output: undefined`` bug we fixed: the
+    SDK closes the observation at ``__exit__`` and ``update_current_*`` falls
+    back to whatever (possibly unrelated) span is current at that moment, so
+    our wrappers no longer attempt updates outside the active block.
+    """
+    client = _RecordingClient()
+    monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: client)
+
+    with obs_module.start_langfuse_span(
+        name="generator", trace_id=None, input_payload={"x": 1}
+    ):
+        pass
+    obs_module.update_langfuse_span(output={"too": "late"})
+
+    assert client.spans[0].updates == []
+
+
 def test_start_langfuse_span_returns_nullcontext_when_client_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,10 +244,9 @@ def test_start_langfuse_span_returns_nullcontext_when_client_raises(
             raise RuntimeError("langfuse exploded")
 
     monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: _BrokenClient())
-    span, ctx = obs_module.start_langfuse_span(
+    ctx = obs_module.start_langfuse_span(
         name="x", trace_id="t", input_payload=None
     )
-    assert span is None
     with ctx:
         pass
 
@@ -203,7 +257,7 @@ def test_start_langfuse_span_returns_nullcontext_when_client_raises(
 
 
 @contextmanager
-def _patch_recording_client(monkeypatch: pytest.MonkeyPatch) -> _RecordingClient:
+def _patch_recording_client(monkeypatch: pytest.MonkeyPatch):
     client = _RecordingClient()
     monkeypatch.setattr(obs_module, "get_langfuse_client", lambda: client)
     yield client
