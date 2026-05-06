@@ -37,6 +37,12 @@ def test_normalize_base_url() -> None:
     assert normalize_base_url(None) == DEFAULT_ORCHESTRATOR_URL
 
 
+def test_normalize_text_to_sql_url() -> None:
+    assert normalize_text_to_sql_url(" http://localhost:8001/ ") == "http://localhost:8001"
+    assert normalize_text_to_sql_url("") == DEFAULT_TEXT_TO_SQL_URL
+    assert normalize_text_to_sql_url(None) == DEFAULT_TEXT_TO_SQL_URL
+
+
 def test_visible_messages_filters_tool_and_empty_messages() -> None:
     out = visible_messages(
         [
@@ -225,12 +231,6 @@ def test_ui_client_raises_on_http_error() -> None:
         client.close()
 
     assert "HTTP 500" in str(exc_info.value)
-
-
-def test_normalize_text_to_sql_url() -> None:
-    assert normalize_text_to_sql_url(" http://localhost:8001/ ") == "http://localhost:8001"
-    assert normalize_text_to_sql_url("") == DEFAULT_TEXT_TO_SQL_URL
-    assert normalize_text_to_sql_url(None) == DEFAULT_TEXT_TO_SQL_URL
 
 
 def test_database_options_normalizes_and_sorts() -> None:

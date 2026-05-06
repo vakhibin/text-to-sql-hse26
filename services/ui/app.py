@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 
 import streamlit as st
@@ -28,8 +29,23 @@ from services.ui.client import (
 )
 
 
+def _query_param_value(name: str) -> str | None:
+    raw = st.query_params.get(name)
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    value = str(raw or "").strip()
+    return value or None
+
+
+def _sync_session_query_param() -> None:
+    session_id = str(st.session_state.get("session_id") or "").strip()
+    if session_id and _query_param_value("session_id") != session_id:
+        st.query_params["session_id"] = session_id
+
+
 def _init_state() -> None:
-    st.session_state.setdefault("session_id", f"ui-{uuid.uuid4().hex[:8]}")
+    initial_session_id = _query_param_value("session_id") or f"ui-{uuid.uuid4().hex[:8]}"
+    st.session_state.setdefault("session_id", initial_session_id)
     st.session_state.setdefault("user_id", "streamlit-user")
     st.session_state.setdefault(
         "orchestrator_url",
@@ -46,8 +62,10 @@ def _init_state() -> None:
         float(os.getenv("ORCHESTRATOR_UI_TIMEOUT_S", DEFAULT_UI_TIMEOUT_S)),
     )
     st.session_state.setdefault("messages", [])
-    st.session_state.setdefault("question_prompt", "")
-    st.session_state.setdefault("followup_prompt", "")
+    st.session_state.setdefault("sql_editor", "")
+    st.session_state.setdefault("sql_editor_source_sql", "")
+    st.session_state.setdefault("reload_sql_editor", False)
+    st.session_state.setdefault("sidebar_chat_prompt", "")
     st.session_state.setdefault("last_session", None)
     st.session_state.setdefault("last_error", None)
     st.session_state.setdefault("catalog", None)
@@ -59,6 +77,38 @@ def _init_state() -> None:
     # the conversational trace; per-pipeline-run links live in the pipeline
     # panel via meta["langfuse_trace_url"].
     st.session_state.setdefault("last_chat_trace_url", None)
+    _sync_session_query_param()
+
+
+def _inject_styles() -> None:
+    """Small visual polish layer for the Streamlit workbench."""
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stSidebar"] section[data-testid="stSidebarContent"] {
+            padding-top: 1.25rem;
+        }
+        div[data-testid="stTextArea"] textarea {
+            font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+            font-size: 0.9rem;
+            line-height: 1.45;
+            border-radius: 10px;
+        }
+        div[data-testid="stDataFrame"] {
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        button[kind="primary"] {
+            border-radius: 9px;
+            font-weight: 650;
+        }
+        .stStatus {
+            border-radius: 12px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _client() -> OrchestratorUIClient:
@@ -135,6 +185,33 @@ def _active_db_param() -> str | None:
     )
 
 
+def _progress_steps(prompt: str) -> list[tuple[str, str]]:
+    normalized = prompt.lower()
+    if "execute this sql" in normalized:
+        return [
+            ("Checking read-only guardrails", "Validating that the query is safe to run."),
+            ("Executing SQL", "Running the query against the selected database."),
+            ("Preparing result table", "Normalizing rows and storing execution history."),
+        ]
+    if "explain this sql" in normalized or "explain sql" in normalized:
+        return [
+            ("Reading SQL", "Parsing the query and identifying the referenced tables."),
+            ("Preparing explanation", "Writing a concise explanation for the user."),
+        ]
+    if "modify this sql" in normalized or "refine" in normalized:
+        return [
+            ("Reading current SQL", "Understanding the existing query shape."),
+            ("Applying requested change", "Asking the agent to update the query."),
+            ("Syncing editor", "Saving the updated SQL back into the workbench."),
+        ]
+    return [
+        ("Selecting relevant tables", "Retrieving and reranking schema context."),
+        ("Building query plan", "Preparing a schema-grounded sketch."),
+        ("Generating SQL query", "Creating and validating SQL candidates."),
+        ("Preparing answer", "Formatting SQL and preview rows for the chat."),
+    ]
+
+
 def _send_message(prompt: str) -> bool:
     st.session_state.messages.append({"role": "human", "content": prompt})
     client = _client()
@@ -175,6 +252,8 @@ def _reset_session() -> None:
         client.close()
     st.session_state.messages = []
     st.session_state.last_session = None
+    st.session_state.sql_editor = ""
+    st.session_state.sql_editor_source_sql = ""
 
 
 def _render_database_browser() -> None:
@@ -252,63 +331,51 @@ def _render_database_browser() -> None:
                     )
 
 
-def _render_sidebar() -> None:
-    with st.sidebar:
-        _render_database_browser()
+def _render_control_panel() -> None:
+    _render_database_browser()
 
-        st.divider()
-        st.header("Connection")
-        st.text_input("Orchestrator API URL", key="orchestrator_url")
-        st.number_input(
-            "Request timeout (s)",
-            key="orchestrator_timeout_s",
-            min_value=30.0,
-            max_value=600.0,
-            step=30.0,
-            help="Full text-to-SQL runs may take 1-3 minutes on first request.",
-        )
+    st.divider()
+    st.header("Connection")
+    st.text_input("Orchestrator API URL", key="orchestrator_url")
+    st.number_input(
+        "Request timeout (s)",
+        key="orchestrator_timeout_s",
+        min_value=30.0,
+        max_value=600.0,
+        step=30.0,
+        help="Full text-to-SQL runs may take 1-3 minutes on first request.",
+    )
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            if st.button("Check health", use_container_width=True):
-                client = _client()
-                try:
-                    health = client.health()
-                    st.success(f"{health.get('service')} {health.get('version')}")
-                except OrchestratorUIError as exc:
-                    st.error(str(exc))
-                finally:
-                    client.close()
-        with col_b:
-            if st.button("Reload", use_container_width=True):
-                _load_session()
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("Check health", use_container_width=True):
+            client = _client()
+            try:
+                health = client.health()
+                st.success(f"{health.get('service')} {health.get('version')}")
+            except OrchestratorUIError as exc:
+                st.error(str(exc))
+            finally:
+                client.close()
+    with col_b:
+        if st.button("Reload", use_container_width=True):
+            _load_session()
 
-        st.divider()
-        st.header("Session")
-        st.text_input("Session ID", key="session_id")
-        st.text_input("User ID", key="user_id")
-        st.text_input(
-            "Active DB ID override",
-            key="active_db_id_input",
-            help="Optional. The agent can also choose/switch DBs using tools.",
-        )
-        if st.session_state.active_db_id_input.strip():
-            st.session_state.active_db_id = st.session_state.active_db_id_input.strip()
-        if st.button("Reset session", type="secondary", use_container_width=True):
-            _reset_session()
-            st.rerun()
-
-        session = st.session_state.last_session
-        if session:
-            st.divider()
-            st.caption(f"Active DB: `{session.get('active_db_id') or '-'}`")
-            if session.get("last_sql"):
-                st.caption("Last SQL available")
-            history = sql_history_from_session(session)
-            if history:
-                st.subheader("SQL History")
-                for i, entry in enumerate(history[:5], start=1):
-                    st.caption(format_history_label(i, entry))
+    st.divider()
+    st.header("Session")
+    st.text_input("Session ID", key="session_id")
+    _sync_session_query_param()
+    st.text_input("User ID", key="user_id")
+    st.text_input(
+        "Active DB ID override",
+        key="active_db_id_input",
+        help="Optional. The agent can also choose/switch DBs using tools.",
+    )
+    if st.session_state.active_db_id_input.strip():
+        st.session_state.active_db_id = st.session_state.active_db_id_input.strip()
+    if st.button("Reset session", type="secondary", use_container_width=True):
+        _reset_session()
+        st.rerun()
 
 
 def _run_prompt(prompt: str, *, label: str | None = None) -> None:
@@ -316,64 +383,190 @@ def _run_prompt(prompt: str, *, label: str | None = None) -> None:
     if not prompt:
         st.warning("Enter a request first.")
         return
-    with st.spinner(label or "Running agent pipeline..."):
-        _send_message(prompt)
+    with st.status(label or "Working on your request...", expanded=True) as status:
+        for step_title, step_detail in _progress_steps(prompt):
+            st.write(f"**{step_title}**")
+            st.caption(step_detail)
+            time.sleep(0.12)
+        status.update(label="Waiting for agent response...", state="running", expanded=True)
+        ok = _send_message(prompt)
+        if ok:
+            status.update(label="Done", state="complete", expanded=False)
+        else:
+            status.update(label="Request failed", state="error", expanded=True)
     st.rerun()
 
 
-def _render_query_workspace() -> None:
-    session = st.session_state.last_session
-    active_db = (
+def _sync_sql_editor_from_session() -> None:
+    """Load newly generated SQL into the editor without clobbering manual edits."""
+    session = st.session_state.last_session or {}
+    last_sql = str(session.get("last_sql") or "").strip()
+    if not last_sql:
+        return
+    if st.session_state.reload_sql_editor or last_sql != st.session_state.sql_editor_source_sql:
+        st.session_state.sql_editor = last_sql
+        st.session_state.sql_editor_source_sql = last_sql
+        st.session_state.reload_sql_editor = False
+
+
+def _active_db_label() -> str:
+    session = st.session_state.last_session or {}
+    return (
         st.session_state.active_db_id_input.strip()
         or st.session_state.active_db_id.strip()
-        or (session or {}).get("active_db_id")
+        or str(session.get("active_db_id") or "").strip()
         or "-"
     )
-    st.subheader("Ask Database")
-    st.caption(f"Active DB: `{active_db}`")
 
-    with st.form("question_form"):
-        question = st.text_area(
-            "Natural-language question",
-            key="question_prompt",
-            height=110,
-            placeholder="Example: Show the top 5 singers by number of concerts.",
+
+def _render_chat_sidebar() -> None:
+    st.header("Agent Chat")
+    st.caption(f"Active DB: `{_active_db_label()}`")
+
+    chat_box = st.container(height=500, border=True)
+    with chat_box:
+        if not st.session_state.messages:
+            st.info(
+                "Ask a question, request SQL changes, or ask for an explanation. "
+                "Generated SQL appears in the main editor."
+            )
+        for msg in st.session_state.messages:
+            role = "user" if msg["role"] == "human" else "assistant"
+            with st.chat_message(role):
+                st.markdown(msg["content"])
+
+    with st.form("sidebar_chat_form", clear_on_submit=True):
+        prompt = st.text_area(
+            "Message",
+            key="sidebar_chat_prompt",
+            height=90,
+            label_visibility="collapsed",
+            placeholder="Ask for data, refine SQL, explain the query...",
         )
-        submitted = st.form_submit_button("Run Text-to-SQL", type="primary")
+        submitted = st.form_submit_button("Send", type="primary", use_container_width=True)
     if submitted:
-        _run_prompt(
-            question,
-            label="Running text-to-SQL pipeline... first request can take 1-3 minutes.",
-        )
-
-    with st.form("followup_form"):
-        followup = st.text_input(
-            "Follow-up command",
-            key="followup_prompt",
-            placeholder="Example: add a filter for 2020, explain SQL, export as csv",
-        )
-        followup_submitted = st.form_submit_button("Send Follow-up")
-    if followup_submitted:
-        _run_prompt(followup, label="Sending follow-up command...")
+        _run_prompt(prompt, label="Running agent...")
 
 
-def _render_sql_panel() -> None:
-    session = st.session_state.last_session
-    last_sql = (session or {}).get("last_sql")
-    st.subheader("Generated SQL")
-    if last_sql:
-        st.code(last_sql, language="sql")
+def _execute_sql_from_editor() -> None:
+    sql = st.session_state.sql_editor.strip()
+    if not sql:
+        st.warning("SQL editor is empty.")
+        return
+    prompt = "Execute this SQL and show the result:\n\n```sql\n" + sql + "\n```"
+    _run_prompt(prompt, label="Executing SQL through orchestrator guardrails...")
+
+
+def _render_result_table() -> None:
+    result = latest_result_from_session(st.session_state.last_session)
+    row_count = result["row_count"]
+    columns = result["columns"]
+    rows = result["rows"]
+
+    result_header = st.columns([0.5, 0.5, 1.4])
+    result_header[0].metric("Rows", row_count if row_count is not None else "-")
+    result_header[1].metric("Columns", len(columns) if columns else 0)
+    result_header[2].caption(
+        "Latest execution preview"
+        if rows
+        else "Execute SQL to populate the result table."
+    )
+
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True, height=360)
     else:
-        st.info("Run a question to generate SQL.")
+        st.info("No result preview yet.")
 
-    chat_trace_url = st.session_state.get("last_chat_trace_url")
-    if chat_trace_url:
-        st.link_button(
-            "Open chat trace in Langfuse",
-            chat_trace_url,
-            help="Inspect this chat turn end-to-end: agent decisions, tool calls, "
-            "and any pipeline run nested inside.",
-        )
+
+def _render_sql_workbench() -> None:
+    _sync_sql_editor_from_session()
+
+    st.subheader("SQL Workbench")
+    st.caption("Generated SQL is editable. Use the left chat for follow-up changes.")
+
+    st.text_area(
+        "SQL editor",
+        key="sql_editor",
+        height=220,
+        label_visibility="collapsed",
+        placeholder="SELECT ...",
+    )
+
+    action_cols = st.columns([0.9, 0.9, 0.9, 2.4])
+    if action_cols[0].button("Execute SQL", type="primary", use_container_width=True):
+        _execute_sql_from_editor()
+    if action_cols[1].button("Explain", use_container_width=True):
+        sql = st.session_state.sql_editor.strip()
+        if sql:
+            _run_prompt(
+                "Explain this SQL in plain language:\n\n```sql\n" + sql + "\n```",
+                label="Asking agent to explain SQL...",
+            )
+        else:
+            st.warning("SQL editor is empty.")
+    if action_cols[2].button("Reload Last SQL", use_container_width=True):
+        st.session_state.reload_sql_editor = True
+        st.rerun()
+
+    st.divider()
+    _render_result_table()
+
+
+def _render_right_rail() -> None:
+    st.subheader("Run Inspector")
+    rail = st.container(height=640, border=False)
+    with rail:
+        meta = latest_run_meta_from_session(st.session_state.last_session)
+        if meta["elapsed_s"] or meta["cost_usd"]:
+            metric_cols = st.columns(2)
+            metric_cols[0].metric("Latency", f"{meta['elapsed_s']:.2f}s")
+            metric_cols[1].metric("Cost", f"${meta['cost_usd']:.4f}")
+        else:
+            st.caption("Run a query to see traces and metadata.")
+
+        chat_trace_url = st.session_state.get("last_chat_trace_url")
+        if chat_trace_url:
+            st.link_button(
+                "Open chat trace",
+                chat_trace_url,
+                use_container_width=True,
+                help="Inspect the orchestrator turn in Langfuse.",
+            )
+        if meta.get("langfuse_trace_url"):
+            st.link_button(
+                "Open pipeline trace",
+                meta["langfuse_trace_url"],
+                use_container_width=True,
+                help="Inspect the text-to-SQL pipeline run in Langfuse.",
+            )
+
+        with st.expander("Pipeline stages", expanded=True):
+            _render_pipeline_panel()
+
+        with st.expander("Query grounding", expanded=False):
+            if meta["selected_tables"]:
+                st.caption("Selected tables")
+                st.markdown(", ".join(f"`{table}`" for table in meta["selected_tables"]))
+            if meta["query_sketch_text"]:
+                st.caption("Query sketch")
+                st.markdown(str(meta["query_sketch_text"]))
+            if not meta["selected_tables"] and not meta["query_sketch_text"]:
+                st.caption("No grounding metadata yet.")
+
+        with st.expander("SQL History", expanded=False):
+            history = sql_history_from_session(st.session_state.last_session)
+            if history:
+                for i, entry in enumerate(history[:10], start=1):
+                    st.caption(format_history_label(i, entry))
+            else:
+                st.caption("No SQL history yet.")
+
+        with st.expander("Settings", expanded=False):
+            settings_box = st.container(height=420, border=False)
+            with settings_box:
+                _render_control_panel()
+
+        _render_conversation_log()
 
 
 def _stage_icon(status: str | None) -> str:
@@ -390,17 +583,10 @@ def _stage_icon(status: str | None) -> str:
 def _render_pipeline_panel() -> None:
     meta = latest_run_meta_from_session(st.session_state.last_session)
     stage_status = meta["stage_status"]
-    st.subheader("Pipeline")
 
     if not stage_status and not meta["trace_id"]:
-        st.info("Run a question to see pipeline stages, cost, and latency.")
+        st.caption("No pipeline metadata yet.")
         return
-
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Latency", f"{meta['elapsed_s']:.2f}s")
-    metric_cols[1].metric("Cost", f"${meta['cost_usd']:.4f}")
-    metric_cols[2].metric("Warnings", len(meta["warnings"]))
-    metric_cols[3].metric("Executed", "yes" if meta["executed"] else "no")
 
     default_stages = [
         "selector",
@@ -416,66 +602,18 @@ def _render_pipeline_panel() -> None:
     stages.extend(stage for stage in stage_status if stage not in stages)
 
     if stages:
-        with st.expander("Stage status", expanded=True):
-            for stage in stages:
-                status = stage_status.get(stage)
-                st.markdown(f"- `{_stage_icon(status)}` **{stage}**: `{status or 'pending'}`")
+        for stage in stages:
+            status = stage_status.get(stage)
+            st.markdown(f"- `{_stage_icon(status)}` **{stage}**: `{status or 'pending'}`")
 
     if meta["trace_id"]:
         st.caption(f"Trace ID: `{meta['trace_id']}`")
-    if meta.get("langfuse_trace_url"):
-        st.link_button(
-            "Open Langfuse trace",
-            meta["langfuse_trace_url"],
-            help="Open this run in the Langfuse UI: stage spans, LLM generations, latency, cost.",
-        )
-    if meta["selected_tables"] or meta["query_sketch_text"]:
-        with st.expander("Query grounding", expanded=False):
-            if meta["selected_tables"]:
-                st.caption("Selected tables")
-                st.markdown(", ".join(f"`{table}`" for table in meta["selected_tables"]))
-            if meta["query_sketch_text"]:
-                st.caption("Query sketch")
-                st.markdown(str(meta["query_sketch_text"]))
     if meta["error"]:
         st.error(str(meta["error"]))
     if meta["warnings"]:
-        with st.expander("Warnings", expanded=False):
-            for warning in meta["warnings"]:
-                st.warning(warning)
-
-
-def _render_result_panel() -> None:
-    session = st.session_state.last_session
-    extra = session_extra(session)
-    result = latest_result_from_session(session)
-    row_count = result["row_count"]
-    columns = result["columns"]
-    rows = result["rows"]
-
-    st.subheader("Latest Result")
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Rows", row_count if row_count is not None else "-")
-    metric_cols[1].metric("Columns", len(columns) if columns else 0)
-    metric_cols[2].metric("Preview Rows", len(rows))
-
-    if columns:
-        st.caption("Columns: " + ", ".join(columns))
-
-    with st.expander("Preview rows", expanded=False):
-        if rows:
-            st.dataframe(rows, use_container_width=True, hide_index=True)
-        else:
-            st.caption("No row preview is available yet.")
-
-    export_cols = st.columns(3)
-    for fmt, col in zip(("markdown", "csv", "json"), export_cols):
-        if col.button(f"Export {fmt.upper()}", use_container_width=True):
-            _run_prompt(f"export latest results as {fmt}", label=f"Exporting {fmt}...")
-
-    if extra.get("last_result_export"):
-        with st.expander("Last export", expanded=False):
-            st.code(str(extra["last_result_export"]))
+        st.caption(f"Warnings: {len(meta['warnings'])}")
+        for warning in meta["warnings"]:
+            st.warning(warning)
 
 
 def _render_guardrails_panel() -> None:
@@ -508,27 +646,26 @@ def main() -> None:
     )
     _init_state()
 
-    st.title("Text-to-SQL Workbench")
-    st.caption("DBeaver-light UI over the conversational text-to-SQL orchestrator")
+    _inject_styles()
 
-    _render_sidebar()
+    with st.sidebar:
+        _render_chat_sidebar()
+
+    header_left, header_right = st.columns([1.0, 0.32], gap="large")
+    with header_left:
+        st.title("Text-to-SQL Workbench")
+        st.caption("Chat-driven SQL workspace over the conversational text-to-SQL orchestrator")
+    with header_right:
+        st.write("")
+        st.write("")
+        with st.popover("Run Inspector", use_container_width=True):
+            _render_right_rail()
 
     if st.session_state.last_error:
         st.error(st.session_state.last_error)
 
     _render_guardrails_panel()
-
-    top_left, top_right = st.columns([1.05, 0.95], gap="large")
-    with top_left:
-        _render_query_workspace()
-    with top_right:
-        _render_sql_panel()
-
-    st.divider()
-    _render_pipeline_panel()
-    st.divider()
-    _render_result_panel()
-    _render_conversation_log()
+    _render_sql_workbench()
 
 
 if __name__ == "__main__":
