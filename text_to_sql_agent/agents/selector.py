@@ -214,7 +214,8 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         question = state["question"]
         db_id = state["db_id"]
         schema_root = state.get("schema_root")
-        schema = await load_schema(db_id, spider_root=schema_root)
+        schema_variant = str(state.get("spider_schema_variant") or "default").strip() or "default"
+        schema = await load_schema(db_id, spider_root=schema_root, spider_schema_variant=schema_variant)
 
         loops = int(state.get("sketcher_selector_loops") or 0)
         recovery_missing = [str(x).strip() for x in (state.get("missing_entities") or []) if str(x).strip()]
@@ -233,7 +234,9 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         n_tables = len(schema.get("tables", []))
         cap = settings.selector_skip_filter_max_tables
         if cap > 0 and n_tables <= cap:
-            mschema_full = schema_to_mschema(schema, schema_root=schema_root)
+            mschema_full = schema_to_mschema(
+                schema, schema_root=schema_root, spider_schema_variant=schema_variant
+            )
             elapsed = round(time.perf_counter() - started, 4)
             warnings.append(
                 f"selector: {n_tables} table(s) <= SELECTOR_SKIP_FILTER_MAX_TABLES ({cap}); "
@@ -255,11 +258,12 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
             }
 
         vector_store = _get_vector_store()
-        await vector_store.index_schema(db_id=db_id, schema=schema)
+        await vector_store.index_schema(db_id=db_id, schema=schema, schema_variant=schema_variant)
         vector_candidates = await vector_store.query_tables(
             query=question,
             db_id=db_id,
             top_k=settings.selector_top_k_tables,
+            schema_variant=schema_variant,
         )
         lexical_candidates = _build_lexical_candidates(
             schema,
@@ -345,8 +349,12 @@ async def run_selector(state: SQLAgentState) -> SQLAgentState:
         return {
             **state,
             "full_schema": schema,
-            "filtered_schema": schema_to_mschema(filtered_schema, schema_root=schema_root),
-            "retrieved_schema_context": schema_to_mschema(retrieved_schema, schema_root=schema_root),
+            "filtered_schema": schema_to_mschema(
+                filtered_schema, schema_root=schema_root, spider_schema_variant=schema_variant
+            ),
+            "retrieved_schema_context": schema_to_mschema(
+                retrieved_schema, schema_root=schema_root, spider_schema_variant=schema_variant
+            ),
             "missing_entities": [],
             "sketcher_selector_loops": loops,
             "stage_status": stage_status,
@@ -379,10 +387,12 @@ async def prewarm_selector_cache(
     db_ids: list[str],
     *,
     schema_root: str | None = None,
+    spider_schema_variant: str = "default",
 ) -> None:
     """Warm schema cache and Chroma index for benchmark runs."""
     vector_store = _get_vector_store()
+    variant = str(spider_schema_variant or "default").strip() or "default"
     for db_id in dict.fromkeys(db_ids):
-        schema = await load_schema(db_id, spider_root=schema_root)
-        await vector_store.index_schema(db_id=db_id, schema=schema)
+        schema = await load_schema(db_id, spider_root=schema_root, spider_schema_variant=variant)
+        await vector_store.index_schema(db_id=db_id, schema=schema, schema_variant=variant)
 

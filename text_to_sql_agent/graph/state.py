@@ -17,6 +17,8 @@ class SQLAgentState(TypedDict):
     db_id: str
     evidence: Optional[str]
     schema_root: Optional[str]
+    spider_schema_variant: str
+    quote_sql_column_identifiers: bool
 
     # Sketcher → selector recovery (missing schema concepts)
     missing_entities: list[str]
@@ -136,13 +138,18 @@ def make_initial_state(
     evidence: Optional[str] = None,
     schema_root: Optional[str] = None,
     trace_id: Optional[str] = None,
+    spider_schema_variant: Optional[str] = None,
+    quote_sql_column_identifiers: bool = False,
 ) -> SQLAgentState:
     """Build deterministic initial state for graph invocation."""
+    variant = (spider_schema_variant or "default").strip() or "default"
     return {
         "question": question,
         "db_id": db_id,
         "evidence": evidence,
         "schema_root": schema_root,
+        "spider_schema_variant": variant,
+        "quote_sql_column_identifiers": quote_sql_column_identifiers,
         "missing_entities": [],
         "sketcher_selector_loops": 0,
         "full_schema": {},

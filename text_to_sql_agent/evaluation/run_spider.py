@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import os
-import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,23 +15,23 @@ from uuid import uuid4
 
 import sys
 
-import kagglehub
 from tqdm import tqdm
 
 from text_to_sql_agent.agents.selector import prewarm_selector_cache
+from text_to_sql_agent.tools.few_shot import prewarm_few_shot_cache
 from text_to_sql_agent.config import settings
+from text_to_sql_agent.datasets.spider_assets import ensure_spider_for_eval
 from text_to_sql_agent.evaluation.metrics import (
     BenchmarkMetrics,
     exact_match,
     execution_match as official_execution_match,
 )
 from text_to_sql_agent.evaluation.spider_debug_subset import load_subset_manifest
+from text_to_sql_agent.evaluation.spider_split_io import load_spider_split_records
 from text_to_sql_agent.graph.pipeline import build_graph
 from text_to_sql_agent.graph.state import make_initial_state
 from text_to_sql_agent.tools.observability import flush_langfuse
 from text_to_sql_agent.tools.sql_executor import execute_sql
-
-KAGGLE_SPIDER_DATASET = "jeromeblanchet/yale-universitys-spider-10-nlp-dataset"
 
 
 @dataclass
@@ -43,80 +42,26 @@ class SpiderExample:
     evidence: str | None = None
 
 
-def _required_spider_files(root: Path) -> list[Path]:
-    return [
-        root / "tables.json",
-        root / "dev.json",
-        root / "train_spider.json",
-        root / "database",
-    ]
-
-
-def _is_spider_ready(root: Path) -> bool:
-    return all(path.exists() for path in _required_spider_files(root))
-
-
-def _copy_spider_tree(source_root: Path, target_root: Path) -> None:
-    target_root.mkdir(parents=True, exist_ok=True)
-    for name in ["tables.json", "dev.json", "train_spider.json", "database"]:
-        src = source_root / name
-        dst = target_root / name
-        if not src.exists():
-            continue
-        if src.is_dir():
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
-
-
-def _find_spider_root(downloaded_dir: Path) -> Path | None:
-    if _is_spider_ready(downloaded_dir):
-        return downloaded_dir
-    for candidate in downloaded_dir.rglob("*"):
-        if candidate.is_dir() and _is_spider_ready(candidate):
-            return candidate
-    return None
-
-
-def ensure_spider_dataset(spider_root: Path, allow_download: bool) -> Path:
-    """Ensure Spider files exist locally; optionally download via kagglehub."""
-    if _is_spider_ready(spider_root):
-        return spider_root
-    if not allow_download:
-        raise FileNotFoundError(
-            f"Spider dataset not found at {spider_root}. "
-            "Use --download or set SPIDER_ROOT correctly."
-        )
-
-    downloaded_path = Path(kagglehub.dataset_download(KAGGLE_SPIDER_DATASET))
-    source_root = _find_spider_root(downloaded_path)
-    if source_root is None:
-        raise FileNotFoundError(
-            f"Downloaded dataset at {downloaded_path}, but Spider files were not detected."
-        )
-    _copy_spider_tree(source_root, spider_root)
-    if not _is_spider_ready(spider_root):
-        raise FileNotFoundError("Spider dataset copy completed, but required files are still missing.")
-    return spider_root
+def ensure_spider_dataset(spider_root: Path, allow_download: bool, *, split: str) -> Path:
+    """Ensure Spider files exist for ``split`` (core bundle + test assets when needed)."""
+    return ensure_spider_for_eval(spider_root, split, allow_download=allow_download)
 
 
 def load_spider_examples(spider_root: Path, split: str) -> list[SpiderExample]:
-    split_file = spider_root / ("dev.json" if split == "dev" else "train_spider.json")
-    if not split_file.exists():
-        raise FileNotFoundError(f"Split file not found: {split_file}")
-    with split_file.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    records = load_spider_split_records(spider_root, split)
     return [
         SpiderExample(
             db_id=item["db_id"],
             question=item["question"],
-            query=item["query"],
+            query=str(item.get("query") or ""),
             evidence=item.get("evidence"),
         )
-        for item in data
+        for item in records
     ]
+
+
+def _spider_schema_variant_for_split(split: str) -> str:
+    return "test" if split == "test" else "default"
 
 
 def _aggregate_usage(records: list[dict[str, Any]], total_examples: int) -> dict[str, Any]:
@@ -251,6 +196,7 @@ async def _evaluate_one(
     *,
     benchmark_run_id: str,
     example_idx: int,
+    spider_schema_variant: str,
 ) -> dict[str, Any]:
     state = make_initial_state(
         question=example.question,
@@ -258,17 +204,19 @@ async def _evaluate_one(
         evidence=example.evidence,
         schema_root=str(spider_root),
         trace_id=f"{benchmark_run_id}:{example_idx}",
+        spider_schema_variant=spider_schema_variant,
     )
     result = await graph.ainvoke(state)
     predicted_sql = (result.get("final_sql") or result.get("best_sql") or "").strip()
 
-    db_path = spider_root / "database" / example.db_id / f"{example.db_id}.sqlite"
-    pred_exec = await execute_sql(str(db_path), predicted_sql) if predicted_sql else None
-    gold_exec = await execute_sql(str(db_path), example.query)
+    db_path = str((result.get("full_schema") or {}).get("db_path") or "").strip()
+    pred_exec = await execute_sql(db_path, predicted_sql) if predicted_sql and db_path else None
+    gold_exec = await execute_sql(db_path, example.query) if db_path else None
 
     exec_match = (
         pred_exec is not None
         and pred_exec.success
+        and gold_exec is not None
         and gold_exec.success
         and official_execution_match(
             pred_exec.rows,
@@ -373,12 +321,16 @@ async def run_spider_benchmark(
     if subset_metadata is not None:
         subset_metadata["evaluated_examples"] = len(examples)
 
+    schema_variant = _spider_schema_variant_for_split(split)
+
     prewarm_started = time.perf_counter()
     if prewarm:
         await prewarm_selector_cache(
             [example.db_id for example in examples],
             schema_root=str(spider_root),
+            spider_schema_variant=schema_variant,
         )
+        await prewarm_few_shot_cache()
     prewarm_time_s = time.perf_counter() - prewarm_started
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -402,6 +354,7 @@ async def run_spider_benchmark(
                     spider_root,
                     benchmark_run_id=benchmark_run_id,
                     example_idx=idx,
+                    spider_schema_variant=schema_variant,
                 )
                 example_task = asyncio.create_task(coroutine)
                 example_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
@@ -514,11 +467,16 @@ async def run_spider_benchmark(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Spider v1 benchmark")
-    parser.add_argument("--split", choices=["dev", "train"], default="dev")
+    parser.add_argument("--split", choices=["dev", "train", "test"], default="dev")
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--smoke", action="store_true", help="Run on small subset for quick checks")
     parser.add_argument("--smoke-size", type=int, default=20)
-    parser.add_argument("--download", action="store_true", default=False, help="Auto-download Spider if missing")
+    parser.add_argument(
+        "--download",
+        action="store_true",
+        default=False,
+        help="Auto-download Spider core bundle (+ test files when --split test) if missing",
+    )
     parser.add_argument("--output", type=str, default="outputs/spider_v1_results.json")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of examples to evaluate in parallel")
     parser.add_argument("--prewarm", action="store_true", help="Preload schema cache and vector index before scoring")
@@ -538,7 +496,9 @@ def main() -> None:
     args = parser.parse_args()
 
     spider_root = Path(args.spider_root)
-    spider_root = ensure_spider_dataset(spider_root=spider_root, allow_download=args.download)
+    spider_root = ensure_spider_dataset(
+        spider_root=spider_root, allow_download=args.download, split=args.split
+    )
 
     max_examples = args.max_examples
     if args.smoke:

@@ -19,7 +19,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build Spider subset from top problematic DBs in a results file")
     parser.add_argument("--results", type=str, required=True, help="Path to Spider results JSON")
     parser.add_argument("--spider-root", type=str, default=settings.spider_root)
-    parser.add_argument("--split", choices=["dev", "train"], default="dev")
+    parser.add_argument("--split", choices=["dev", "train", "test"], default="dev")
     parser.add_argument("--subset-id", type=str, default="spider-problem-dbs-v1")
     parser.add_argument("--top-dbs", type=int, default=3, help="Number of problematic DBs to include")
     parser.add_argument(

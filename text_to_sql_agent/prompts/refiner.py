@@ -21,6 +21,7 @@ def build_refiner_prompt(
     validation_warnings: list[str],
     selected_candidate_summary: str,
     failed_candidate_summaries: list[str],
+    quote_sql_column_identifiers: bool = False,
 ) -> str:
     """Build SQL-fix prompt from failed query and DB error."""
     additional_schema_block = ""
@@ -35,6 +36,12 @@ Retrieved schema candidates:
     validation_errors_block = "\n".join(f"- {item}" for item in validation_errors) if validation_errors else "- (none)"
     validation_warnings_block = "\n".join(f"- {item}" for item in validation_warnings) if validation_warnings else "- (none)"
     failed_candidates_block = "\n".join(f"- {item}" for item in failed_candidate_summaries) if failed_candidate_summaries else "- (none)"
+
+    quote_columns_block = ""
+    if quote_sql_column_identifiers:
+        quote_columns_block = """
+- Mandatory: in the corrected SQLite, wrap every column name (SELECT, WHERE, JOIN ON, GROUP BY, ORDER BY, HAVING, expressions) in double quotes (\") exactly as in the schema. Keep literals in single quotes.
+""".rstrip()
 
     return f"""
 You are an expert SQLite SQL fixer.
@@ -82,6 +89,7 @@ Repair policy:
 - If validation errors mention output shape or projection order, fix that before making bigger structural changes.
 - Prefer the simpler equivalent query when possible.
 - If literals are risky, preserve the exact literal spelling/casing/value from the question, evidence, or schema context.
+{quote_columns_block}
 
 Before returning SQL, validate it against the provided schema and question:
 - every referenced table must exist
