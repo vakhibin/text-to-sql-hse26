@@ -426,8 +426,6 @@ uv run python -m text_to_sql_agent.evaluation.run_bird --concurrency 12 --prewar
 | [`docs/SERVICE_ARCHITECTURE.md`](docs/SERVICE_ARCHITECTURE.md) | Детальная архитектура сервис-слоя, сессии, гардрейлы, многопользовательская модель |
 | [`services/README.md`](services/README.md) | Шпаргалка по endpoint'ам и dev-запуску трёх сервисов |
 | [`docs/baseline_results.md`](docs/baseline_results.md) | Бейслайн-метрики на Spider/BIRD до ансамблевой архитектуры |
-| [`PROJECT_PLAN.md`](PROJECT_PLAN.md) | Roadmap проекта |
-
 ---
 
 ## Структура репозитория

@@ -370,5 +370,4 @@ AST-repair direction to preserve:
 
 - Architecture overview: `docs/ARCHITECTURE.md`
 - Benchmark baseline reference: `docs/baseline_results.md`
-- Project roadmap: `PROJECT_PLAN.md`
 - Pipeline graph export: `docs/pipeline_graph.png`
