@@ -56,8 +56,6 @@ flowchart LR
     T2S -. trace .-> Obs
 ```
 
-Подробная диаграмма со связями и последовательностью обработки запроса — в [`docs/CHAPTER_3_DIAGRAM.md`](docs/CHAPTER_3_DIAGRAM.md).
-
 ---
 
 ## Быстрый старт через Docker Compose
@@ -134,21 +132,30 @@ uv run python scripts/run_orchestrator_smoke.py
 
 Многоэтапный LangGraph-пайплайн, оркестрированный из `text_to_sql_agent/graph/pipeline.py`. Все вызовы LLM идут через единый шлюз — OpenRouter (`text_to_sql_agent/tools/llm_router.py`).
 
-### Стадии
+### Стадии пайплайна
 
-![Pipeline Graph](docs/pipeline_graph.png)
+Текущий граф (`text_to_sql_agent/graph/pipeline.py`):
+
+```
+selector → value_linker → sketcher → generator → execution_filter → voting → refiner
+```
 
 | Стадия | Что делает |
 |---|---|
-| **Selector** | Векторный поиск по схеме (Chroma) + LLM-реранкинг → 3-5 релевантных таблиц |
-| **Decomposer** | Классификация сложности (`simple`/`moderate`/`complex`) + декомпозиция на подвопросы |
-| **Query Sketcher** | Компактный schema-grounded план: таблицы, join intent, фильтры, агрегации, ordering, нужны ли подзапросы |
-| **Generator** | Ансамбль из N кандидатов асинхронно: primary + secondary модель, разные few-shot |
-| **Execution Filter** | Проверка через SQLAlchemy → отсев невалидных и refusal-кандидатов |
-| **Judge** | LLM-as-Judge выбирает лучшего из выживших с обоснованием |
-| **Refiner** | Исполнение → при ошибке итеративная самокоррекция (до `MAX_REFINE_ATTEMPTS`) |
+| **Selector** | Векторный поиск по схеме (Chroma) + LLM-реранкинг → 3-5 релевантных таблиц. Если в БД мало таблиц (`≤ SELECTOR_SKIP_FILTER_MAX_TABLES`), берётся полная схема без фильтрации. |
+| **Value Linker** | Поиск релевантных литералов и колонок в БД для подсказки генератору правильного регистра/написания значений в `WHERE` (например, `'Apple'` vs `'apple'`). |
+| **Query Sketcher** | Компактный schema-grounded план: таблицы, join intent, фильтры, агрегации, ordering, нужны ли подзапросы. **Может вернуть процесс к Selector** (`sketcher → selector`) если обнаружит, что в выбранной схеме нет нужных сущностей (`missing_entities`); число таких циклов ограничено `MAX_SKETCHER_SELECTOR_RECOVERY`. |
+| **Generator** | Ансамбль из N кандидатов асинхронно: primary + secondary модели с разными temperature и few-shot выборками. Бюджет адаптивный: для simple/moderate уменьшается, для complex/unknown полный. |
+| **Execution Filter** | Каждый кандидат прогоняется через SQLAlchemy + read-only гардрейл. Невалидные и refusal-кандидаты (`SELECT 'I cannot...'`) отсеиваются, собирается per-candidate diagnostics (rows, ошибки, структурные метки). |
+| **Voting** | Self-consistency majority voting: кандидаты группируются по каноническому результату исполнения, выбирается SQL из самой большой группы; при ties — самый простой (минимум JOIN, минимум длины). Не делает LLM-вызовов — детерминированная процедура. |
+| **Refiner** | Запускается, если у выбранного SQL ошибка исполнения. Сначала легковесная schema-ref валидация через `sqlglot`, потом LLM-фикс по тексту ошибки и контексту схемы. Зацикливается на себя до `MAX_REFINE_ATTEMPTS`. |
 
-Граф имеет условные ветвления и ранний выход при критических сбоях. На `simple` запросах включается cheap-path с пропуском Judge, на `moderate` — урезанный бюджет ансамбля.
+Граф имеет условные ветвления и **ранний выход** на любом шаге при критическом сбое (не нашли таблицы, не получилось ничего сгенерировать, не выжил ни один кандидат и т.п.).
+
+**Ключевое отличие от MAC-SQL baseline:**
+
+- `Decomposer` остался в репозитории как модуль, но **выведен из основного графа** — эксперименты показали, что для простых/средних вопросов он добавлял задержку без выигрыша по EX.
+- Бывший `Judge` (LLM-as-Judge) заменён на **детерминированный `Voting`** — это дешевле, быстрее, и на наших бенчмарках даёт сопоставимый или лучший EX.
 
 ### Политика моделей (по ролям)
 
@@ -157,9 +164,10 @@ uv run python scripts/run_orchestrator_smoke.py
 | Primary generator | `google/gemini-2.5-pro` | Основная генерация SQL |
 | Secondary generator | `deepseek/deepseek-chat-v3` | Разнообразие в ансамбле |
 | Query Sketcher | `google/gemini-2.5-pro` | Планировщик до генерации |
-| Judge | `openai/gpt-4.1` | Выбор лучшего кандидата |
 | Refiner | `openai/gpt-4.1` | Самокоррекция SQL по ошибке |
 | Embeddings | `openai/text-embedding-3-large` | Векторный поиск по схеме |
+
+`Voting` — детерминированная стадия без LLM-вызова. `Value Linker` использует прямые запросы к БД и не нуждается в выделенной модели.
 
 Все роли конфигурируются через `.env` (см. ниже).
 
@@ -227,7 +235,7 @@ Langfuse v3 поднимается тем же `docker-compose` (`langfuse-web`,
 Что собирается:
 
 - Корневой span на каждый `/run` или `/chat`
-- Дочерние spans по стадиям пайплайна (`selector`, `query_sketcher`, `generator`, …)
+- Дочерние spans по стадиям пайплайна (`selector`, `value_linker`, `sketcher`, `generator`, `execution_filter`, `voting`, `refiner`)
 - LLM-генерации с моделью, токенами, стоимостью
 - Метаданные `session_id`, `db_id`, `trace_id`
 
@@ -244,7 +252,7 @@ Langfuse v3 поднимается тем же `docker-compose` (`langfuse-web`,
 | Группа | Ключевые переменные |
 |---|---|
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` |
-| Модели | `GENERATOR_MODEL_PRIMARY`, `GENERATOR_MODEL_SECONDARY`, `QUERY_SKETCHER_MODEL`, `JUDGE_MODEL`, `REFINER_MODEL`, `EMBEDDINGS_MODEL` |
+| Модели | `GENERATOR_MODEL_PRIMARY`, `GENERATOR_MODEL_SECONDARY`, `QUERY_SKETCHER_MODEL`, `REFINER_MODEL`, `EMBEDDINGS_MODEL` |
 | Данные | `SPIDER_ROOT`, `BIRD_ROOT`, `BIRD_MINI_ROOT`, `CHROMA_PERSIST_DIRECTORY` |
 | Ансамбль | `NUM_CANDIDATES`, `PRIMARY_CALLS`, `SECONDARY_CALLS`, `MAX_REFINE_ATTEMPTS` |
 | Few-shot | `FEW_SHOT_EXAMPLES_PER_CANDIDATE`, `FEW_SHOT_SEMANTIC_RETRIEVAL`, `FEW_SHOT_RETRIEVAL_TOP_K` |
@@ -253,7 +261,7 @@ Langfuse v3 поднимается тем же `docker-compose` (`langfuse-web`,
 | Оркестратор | `ORCH_SQLITE_PATH`, `ORCH_AUDIT_LOG_PATH`, `TEXT_TO_SQL_API_URL`, `ORCHESTRATOR_MAX_TOOL_STEPS` |
 | Langfuse | `LANGFUSE_ENABLED`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_HOST`, `LANGFUSE_PROJECT_ID` |
 
-Меняя модели генератора/судьи, **schema-кеш не инвалидируется**. Меняя `EMBEDDINGS_MODEL` — обязательно нужен новый namespace Chroma (это уже зашито в `vector_store.py`).
+Меняя модели генератора/рефайнера/sketcher'a, **schema-кеш не инвалидируется**. Меняя `EMBEDDINGS_MODEL` — обязательно нужен новый namespace Chroma (это уже зашито в `vector_store.py`).
 
 ---
 
@@ -416,7 +424,6 @@ uv run python -m text_to_sql_agent.evaluation.run_bird --concurrency 12 --prewar
 | [`AGENTS.md`](AGENTS.md) | Политика, инварианты, текущий план экспериментов, ссылки на ключевые модули |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Детальная архитектура research-ядра |
 | [`docs/SERVICE_ARCHITECTURE.md`](docs/SERVICE_ARCHITECTURE.md) | Детальная архитектура сервис-слоя, сессии, гардрейлы, многопользовательская модель |
-| [`docs/CHAPTER_3_DIAGRAM.md`](docs/CHAPTER_3_DIAGRAM.md) | Mermaid-диаграммы сервиса (полная + упрощённая + sequence) |
 | [`services/README.md`](services/README.md) | Шпаргалка по endpoint'ам и dev-запуску трёх сервисов |
 | [`docs/baseline_results.md`](docs/baseline_results.md) | Бейслайн-метрики на Spider/BIRD до ансамблевой архитектуры |
 | [`PROJECT_PLAN.md`](PROJECT_PLAN.md) | Roadmap проекта |
