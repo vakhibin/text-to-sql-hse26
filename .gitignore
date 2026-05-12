@@ -208,5 +208,6 @@ __marimo__/
 
 databases/
 outputs/
+notebooks/
 PROJECT_PLAN.md
 probe_openrouter.py
