@@ -257,6 +257,45 @@ Langfuse v3 поднимается тем же `docker-compose` (`langfuse-web`,
 
 ---
 
+## Подключение своей БД
+
+Сервис поддерживает произвольную пользовательскую SQLite-базу, не только Spider/BIRD. Для этого предусмотрен скрипт-регистратор, который читает схему из вашей `.sqlite`, формирует Spider-совместимый `tables.json` и копирует файл базы в layout, ожидаемый агентом.
+
+```bash
+uv run python scripts/register_user_database.py \
+  --sqlite /path/to/your.sqlite \
+  --db-id my_db \
+  --root databases/user_dbs
+```
+
+Что произойдёт:
+
+- В `databases/user_dbs/tables.json` появится запись со схемой (таблицы, колонки, типы, PK, FK).
+- Файл базы будет скопирован в `databases/user_dbs/database/my_db/my_db.sqlite`.
+- В одном корне можно зарегистрировать несколько БД — повторные запуски с разными `--db-id` дописывают каталог.
+- Опция `--force` перезаписывает существующую запись (полезно при изменении схемы).
+
+После регистрации:
+
+```bash
+# 1. Указать корень в .env
+echo "SPIDER_ROOT=databases/user_dbs" >> .env
+
+# 2. Перезапустить сервисы
+make compose-down && make compose-up
+# или: перезапустить uvicorn-процессы в dev-режиме
+```
+
+Дальше БД появится в `GET /databases`, в селекторе UI и станет доступна агенту-оркестратору через `switch_database`, `describe_database`, `run_text_to_sql` и остальные тулзы.
+
+**Ограничения:**
+
+- Поддерживается только SQLite. PostgreSQL/MySQL пока не подключаются — `sql_executor` универсален, но `schema_loader` и `sample_values` завязаны на sqlite-файл.
+- Активный корень в инстансе один. Чтобы держать сразу Spider, BIRD и свою БД, регистрируйте их в одном корне (`tables.json` с несколькими записями).
+- Few-shot примеры по умолчанию берутся из `train_spider.json`. Для нишевой доменной БД качество генерации будет ниже бенчмарковых цифр — компенсируется хорошим `evidence` в запросе и/или своими few-shot.
+
+---
+
 ## Тестирование
 
 ```bash
