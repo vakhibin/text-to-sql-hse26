@@ -299,6 +299,7 @@ async def run_refiner(state: SQLAgentState) -> SQLAgentState:
             validation_warnings=validation.warnings,
             selected_candidate_summary=selected_candidate_summary,
             failed_candidate_summaries=failed_candidate_summaries,
+            quote_sql_column_identifiers=bool(state.get("quote_sql_column_identifiers", False)),
         )
 
         router = LLMRouter()

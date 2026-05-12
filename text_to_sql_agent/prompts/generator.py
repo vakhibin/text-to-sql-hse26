@@ -15,6 +15,7 @@ def build_generator_prompt(
     few_shot_examples: list[dict[str, str]],
     value_hints_text: str = "",
     column_hints_text: str = "",
+    quote_sql_column_identifiers: bool = False,
 ) -> str:
     """Build SQL generation prompt with optional few-shot examples."""
     few_shot_block = ""
@@ -36,6 +37,15 @@ def build_generator_prompt(
     if column_hints_text:
         linking_block_parts.append(column_hints_text)
     linking_block = "\n" + "\n\n".join(linking_block_parts) + "\n" if linking_block_parts else ""
+
+    quote_columns_rule = ""
+    if quote_sql_column_identifiers:
+        quote_columns_rule = (
+            "26) Mandatory SQLite identifier style: wrap every column name you output (SELECT list, WHERE, "
+            "JOIN ON, GROUP BY, ORDER BY, HAVING, window clauses, and expressions) in ASCII double quotes (\"), "
+            "using the exact spelling and casing from the mSchema. Do not quote table names unless SQLite "
+            "requires it (reserved name). String and date literals must still use single quotes (').\n"
+        )
 
     return f"""
 You are an expert SQLite SQL generator.
@@ -79,6 +89,6 @@ mSchema:
 23) When column hints are provided, use the exact `table.column` identifiers listed there. Do not shorten, rename, or move columns to different tables.
 24) For extremum-style questions (earliest, latest, most, highest, lowest, maximum, minimum, first/last by a metric), prefer filtering with a subquery such as `WHERE col = (SELECT MIN(col) FROM ...)` or `WHERE col = (SELECT MAX(col) FROM ...)` (or `IN` when ties matter) instead of `ORDER BY ... LIMIT 1`, unless the wording clearly asks for a single ordered pick (e.g. "top one row" / "first row when sorted").
 25) End query with semicolon.
-
+{quote_columns_rule}
 SQL:
 """.strip()

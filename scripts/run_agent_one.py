@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the full text-to-sql LangGraph once; append one JSON line per invocation; write detailed log file.
 
-If ``--gold-sql`` is omitted, gold SQL is resolved from Spider ``dev.json`` (or ``train_spider.json`` via
-``--spider-split train``) by ``db_id`` + question (exact, case-insensitive, then fuzzy ≥ 0.92).
+If ``--gold-sql`` is omitted, gold SQL is resolved from Spider ``dev.json``, ``train_spider.json``
+(via ``--spider-split train``), or ``test.json`` + ``test_gold.sql`` (via ``--spider-split test``)
+by ``db_id`` + question (exact, case-insensitive, then fuzzy ≥ 0.92).
 
 Examples:
   uv run python scripts/run_agent_one.py --question "How many singers?" --db-id concert_singer
@@ -49,9 +50,11 @@ def _normalize_question(text: str) -> str:
     return " ".join(text.strip().split())
 
 
+from text_to_sql_agent.evaluation.spider_split_io import spider_split_json_path
+
+
 def _spider_split_path(schema_root: Path, split: str) -> Path:
-    name = "dev.json" if split == "dev" else "train_spider.json"
-    return schema_root / name
+    return spider_split_json_path(schema_root, split)
 
 
 def lookup_spider_gold_sql(
@@ -131,6 +134,7 @@ async def _run(
         evidence=evidence,
         schema_root=str(schema_root),
         trace_id=tid,
+        spider_schema_variant=("test" if spider_split == "test" else "default"),
     )
 
     merged: dict = dict(initial)
@@ -281,7 +285,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--spider-split",
-        choices=("dev", "train"),
+        choices=("dev", "train", "test"),
         default="dev",
         help="Which Spider JSON to search for auto gold (default: dev)",
     )

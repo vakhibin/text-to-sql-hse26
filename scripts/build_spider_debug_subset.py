@@ -21,7 +21,7 @@ from text_to_sql_agent.evaluation.spider_debug_subset import (
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build a stable Spider debug subset manifest")
     parser.add_argument("--spider-root", type=str, default=settings.spider_root)
-    parser.add_argument("--split", choices=["dev", "train"], default="dev")
+    parser.add_argument("--split", choices=["dev", "train", "test"], default="dev")
     parser.add_argument("--subset-id", type=str, default="spider-debug-v1")
     parser.add_argument("--per-tier", type=int, default=50, help="Examples per difficulty tier")
     parser.add_argument("--seed", type=int, default=26)

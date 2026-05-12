@@ -69,6 +69,7 @@ async def run_generator(state: SQLAgentState) -> SQLAgentState:
                 few_shot_examples=examples,
                 value_hints_text=format_value_hints(state.get("value_hints", [])),
                 column_hints_text=format_column_hints(state.get("column_hints", [])),
+                quote_sql_column_identifiers=bool(state.get("quote_sql_column_identifiers", False)),
             )
             response = await router.ainvoke_with_metadata(
                 role=role,

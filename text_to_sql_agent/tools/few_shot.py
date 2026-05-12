@@ -12,9 +12,9 @@ from typing import Any
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 
 from text_to_sql_agent.config import settings
+from text_to_sql_agent.tools.embedding_client import build_langchain_embeddings
 
 
 def _read_train_examples_sync(spider_root: str | Path, max_pool_size: int) -> list[dict[str, str]]:
@@ -55,14 +55,6 @@ def _embedding_namespace(model_name: str) -> str:
     return f"{slug}_{digest}"
 
 
-def _tiktoken_model_name(model_name: str) -> str:
-    if "/" in model_name:
-        provider, remainder = model_name.split("/", 1)
-        if provider in {"openai", "text-embedding"}:
-            return remainder
-    return model_name
-
-
 def _example_to_document(example_id: str, example: dict[str, str]) -> Document:
     question = str(example.get("question", "")).strip()
     sql = str(example.get("sql", "")).strip()
@@ -92,13 +84,7 @@ class FewShotRetriever:
         self._vector_store = Chroma(
             collection_name=self.collection_name,
             persist_directory=self.persist_directory,
-            embedding_function=OpenAIEmbeddings(
-                model=settings.embeddings_model,
-                tiktoken_model_name=_tiktoken_model_name(settings.embeddings_model),
-                check_embedding_ctx_length=False,
-                api_key=settings.openrouter_api_key,
-                base_url=settings.openrouter_base_url,
-            ),
+            embedding_function=build_langchain_embeddings(),
         )
         self._index_lock = asyncio.Lock()
         self._indexed_size = 0
@@ -199,6 +185,26 @@ def _get_few_shot_retriever() -> FewShotRetriever:
             persist_directory=settings.chroma_persist_directory,
         )
     return _retriever
+
+
+async def prewarm_few_shot_cache(*, spider_root: str | Path | None = None) -> None:
+    """Load Spider train pool and build Chroma few-shot index once (matches per-example ``ensure_indexed``)."""
+    import sys
+
+    pool = await load_few_shot_pool(spider_root=spider_root)
+    if not pool:
+        print(
+            "few_shot: train_spider.json missing or empty under SPIDER_ROOT — generator uses zero-shot",
+            file=sys.stderr,
+        )
+        return
+    if not settings.few_shot_semantic_retrieval:
+        return
+    try:
+        retriever = _get_few_shot_retriever()
+        await retriever.ensure_indexed(pool)
+    except Exception as exc:
+        print(f"few_shot: prewarm failed ({exc}); semantic retrieval may fall back per-example", file=sys.stderr)
 
 
 async def retrieve_examples_for_candidate(

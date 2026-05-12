@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from text_to_sql_agent.evaluation.spider_split_io import load_spider_split_records
+
 DifficultyTier = Literal["simple", "moderate", "complex"]
 OutcomeHint = Literal["failure", "execution_only", "exact_match", "unknown"]
 
@@ -26,14 +28,7 @@ class SpiderSubsetRecord:
 
 
 def load_spider_split_with_sql(spider_root: Path, split: str) -> list[dict[str, Any]]:
-    split_file = spider_root / ("dev.json" if split == "dev" else "train_spider.json")
-    if not split_file.exists():
-        raise FileNotFoundError(f"Split file not found: {split_file}")
-    with split_file.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError(f"Spider split must be a list: {split_file}")
-    return data
+    return load_spider_split_records(spider_root, split)
 
 
 def _is_sql_dict(node: Any) -> bool:
