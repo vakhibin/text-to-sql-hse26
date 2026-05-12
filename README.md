@@ -180,7 +180,7 @@ uv run python scripts/run_orchestrator_smoke.py
 
 ## Агент-оркестратор
 
-Разговорный LangGraph-агент над Text-to-SQL агентом. Реализован как граф `agent → tools → agent` с памятью сессии через checkpointer (по умолчанию — SQLite, для прода зарезервирован Postgres).
+Разговорный LangGraph-агент над Text-to-SQL агентом. Реализован как граф `agent → tools → agent` с памятью сессии через SQLite-checkpointer.
 
 ### Что делает
 
@@ -250,7 +250,7 @@ Langfuse v3 поднимается тем же `docker-compose` (`langfuse-web`,
 | Few-shot | `FEW_SHOT_EXAMPLES_PER_CANDIDATE`, `FEW_SHOT_SEMANTIC_RETRIEVAL`, `FEW_SHOT_RETRIEVAL_TOP_K` |
 | Selector | `SELECTOR_TOP_K_TABLES`, `SELECTOR_TARGET_TABLES_MIN/MAX`, `SELECTOR_SKIP_FILTER_MAX_TABLES` |
 | LLM-параметры | `LLM_TEMPERATURE_PRIMARY/SECONDARY/REFINER`, `LLM_MAX_TOKENS`, `LLM_TIMEOUT_SECONDS` |
-| Оркестратор | `ORCH_CHECKPOINTER_BACKEND`, `ORCH_SQLITE_PATH`, `ORCH_AUDIT_LOG_PATH`, `TEXT_TO_SQL_API_URL`, `ORCHESTRATOR_MAX_TOOL_STEPS` |
+| Оркестратор | `ORCH_SQLITE_PATH`, `ORCH_AUDIT_LOG_PATH`, `TEXT_TO_SQL_API_URL`, `ORCHESTRATOR_MAX_TOOL_STEPS` |
 | Langfuse | `LANGFUSE_ENABLED`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_HOST`, `LANGFUSE_PROJECT_ID` |
 
 Меняя модели генератора/судьи, **schema-кеш не инвалидируется**. Меняя `EMBEDDINGS_MODEL` — обязательно нужен новый namespace Chroma (это уже зашито в `vector_store.py`).
