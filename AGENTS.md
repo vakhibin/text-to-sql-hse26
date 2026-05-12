@@ -216,7 +216,7 @@ The `docker-compose.yml` ships a self-hosted Langfuse v3 stack
 A dev project (`text-to-sql-dev` with keys `pk-lf-text-to-sql-dev` /
 `sk-lf-text-to-sql-dev`) is auto-provisioned on first start via
 `LANGFUSE_INIT_*`. Open http://localhost:3000 to inspect traces. Rotate
-the credentials in `.env.compose.example` before any non-local deployment.
+the credentials in `.env` before any non-local deployment.
 
 ## Benchmark Runners
 

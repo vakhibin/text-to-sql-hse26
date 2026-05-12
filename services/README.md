@@ -125,7 +125,7 @@ Phase 10 adds a three-service compose stack:
 Prepare env and data:
 
 ```bash
-cp .env.compose.example .env
+cp .env.example .env
 # edit OPENROUTER_API_KEY and model settings if needed
 # ensure Spider data exists under ./databases/spider
 ```

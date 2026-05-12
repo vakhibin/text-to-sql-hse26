@@ -64,7 +64,7 @@ flowchart LR
 
 ```bash
 # 1. Конфиг
-cp .env.compose.example .env
+cp .env.example .env
 # отредактируй OPENROUTER_API_KEY (обязательно)
 # при необходимости поменяй модели и LANGFUSE_* (есть дефолты для локального dev)
 
@@ -81,7 +81,7 @@ make compose-up
 - UI: <http://localhost:8501>
 - Orchestrator API: <http://localhost:8002/docs>
 - Text-to-SQL API: <http://localhost:8001/docs>
-- Langfuse UI: <http://localhost:3000> (дефолтные dev-креды — в `.env.compose.example`)
+- Langfuse UI: <http://localhost:3000> (дефолтные dev-креды — в `.env.example`)
 
 Полезные команды:
 
@@ -241,13 +241,13 @@ Langfuse v3 поднимается тем же `docker-compose` (`langfuse-web`,
 
 В UI у каждого прогона появляется кнопка «Open Langfuse trace».
 
-Включается флагом `LANGFUSE_ENABLED=true`. Дефолтный dev-проект (`text-to-sql-dev`, ключи `pk-lf-text-to-sql-dev` / `sk-lf-text-to-sql-dev`) автопровиженится через `LANGFUSE_INIT_*` при первом старте. **Перед любым нелокальным развёртыванием ротируйте ключи в `.env.compose.example`.**
+Включается флагом `LANGFUSE_ENABLED=true`. Дефолтный dev-проект (`text-to-sql-dev`, ключи `pk-lf-text-to-sql-dev` / `sk-lf-text-to-sql-dev`) автопровиженится через `LANGFUSE_INIT_*` при первом старте. **Перед любым нелокальным развёртыванием ротируйте ключи.**
 
 ---
 
 ## Конфигурация
 
-Основные группы переменных окружения (полный список — в [`.env.example`](.env.example) и [`.env.compose.example`](.env.compose.example)):
+Основные группы переменных окружения (полный список — в [`.env.example`](.env.example)):
 
 | Группа | Ключевые переменные |
 |---|---|
